@@ -1,0 +1,40 @@
+[2026-02-11 14:18:03 CST+0800] [codex] Task start: implement EBM-online RL prototype from /root/EBM_OnlineRL_implementation.txt in separate Torch repo.
+- Objective: PointMass2D + replay + diffusion inpainting planner + online collect/train/eval loop + metrics/checkpoints/plot.
+- Run/log paths: spec=/root/EBM_OnlineRL_implementation.txt; project=/root/ebm-online-rl-prototype; canonical log=/root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt; runtime logs planned under /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/*.
+- Training status: not started.
+- Latest epoch/key metrics: N/A (no active training run).
+[2026-02-11 14:18:08 CST+0800] [codex] Major action: cloned Diffuser reference code into project.
+- Source: https://github.com/jannerm/diffuser
+- Local path: /root/ebm-online-rl-prototype/third_party/diffuser
+- Purpose: mirror sampling/inpainting/diffusion structure for Torch implementation.
+- Run/log paths: no training run active yet.
+- Latest epoch/key metrics: N/A.
+[2026-02-11 14:40:02 CST+0800] [codex] Major action: implemented standalone Torch prototype codebase.
+- Added environment: /root/ebm-online-rl-prototype/ebm_online_rl/envs/pointmass2d.py
+- Added replay + online modules: /root/ebm-online-rl-prototype/ebm_online_rl/online/{replay_buffer.py,conditioning.py,temporal_unet.py,diffusion.py,planner.py}
+- Added training/eval entrypoint: /root/ebm-online-rl-prototype/scripts/online_pointmass_goal_diffuser.py
+- Added project files: /root/ebm-online-rl-prototype/{README.md,requirements.txt,.gitignore}
+- Added reference repo: /root/ebm-online-rl-prototype/third_party/diffuser
+- Key implementation notes: Diffuser-style inpainting each denoise step; trajectory packing [H+1, obs+act] with terminal state row; action normalization by action_limit.
+- Run/log paths: source logs in /tmp/ebm_smoke*.log; experiment logs under /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/*.
+- Latest epoch/key metrics: not from active training at this moment.
+[2026-02-11 14:40:02 CST+0800] [codex] Major action: completed end-to-end CPU smoke run (fast config) for total_env_steps=2000.
+- Command log: /tmp/ebm_smoke_fast.log
+- Run directory: /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/smoke_fast_2000
+- Checkpoints: step_420.pt, step_800.pt, step_1200.pt, step_1600.pt, step_2000.pt in /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/smoke_fast_2000/checkpoints
+- Metrics file: /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/smoke_fast_2000/metrics.jsonl
+- Plot: /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/smoke_fast_2000/success_rate.png
+- Final known metrics at env_steps=2000: train_loss=1.1557868242263794, eval_success_rate=0.0, eval_final_dist_mean=1.1181827783584595, eval_min_dist_mean=0.8779412984848023.
+- Training status: completed.
+[2026-02-11 14:40:02 CST+0800] [codex] Task end summary.
+- Completed migration to separate repository and Torch-only implementation per user request.
+- Verified inpainting condition correctness with direct sampling check (start/goal clamped, last action row zero).
+- Reviewer-triggered quick run artifacts observed at /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/review_quick_300.
+- Current run state: no active training processes.
+- Next steps: run longer training with larger model/horizon defaults and evaluate success-rate trend against random baseline.
+[2026-02-11 14:40:42 CST+0800] [codex] Major action: final verification and cleanup.
+- Removed unused imports in /root/ebm-online-rl-prototype/scripts/online_pointmass_goal_diffuser.py.
+- Syntax validation passed: python -m py_compile on all Python files under /root/ebm-online-rl-prototype/{ebm_online_rl,scripts}.
+- Additional conditioning check passed via direct sampling: start_ok=True, goal_ok=True, last_action_zero=0.0.
+- Run/log paths: command output tracked in terminal; smoke metrics remain at /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/smoke_fast_2000/metrics.jsonl.
+- Latest known metrics unchanged: env_steps=2000, train_loss=1.1557868242263794, eval_success_rate=0.0.
