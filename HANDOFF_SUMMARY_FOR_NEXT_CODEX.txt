@@ -38,3 +38,11 @@
 - Additional conditioning check passed via direct sampling: start_ok=True, goal_ok=True, last_action_zero=0.0.
 - Run/log paths: command output tracked in terminal; smoke metrics remain at /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/smoke_fast_2000/metrics.jsonl.
 - Latest known metrics unchanged: env_steps=2000, train_loss=1.1557868242263794, eval_success_rate=0.0.
+[2026-02-11 16:52:14 CST+0800] [codex] Major action: launched full default GPU training run and verified active CUDA training/inference.
+- Run id: full_gpu_20260211-164038
+- Command: python -u scripts/online_pointmass_goal_diffuser.py --device cuda:0 --logdir runs/online_pointmass_goal_diffuser/full_gpu_20260211-164038
+- Runtime process: PID 58900 (active)
+- Artifacts path: /root/ebm-online-rl-prototype/runs/online_pointmass_goal_diffuser/full_gpu_20260211-164038
+- Monitoring evidence: sustained nvidia-smi GPU util up to 99%, memory ~701 MiB during rollout/eval; first non-NaN train_loss reached at env_steps=6000.
+- Latest metrics snapshot: env_steps=6000, train_loss=0.29123201861977577, episode_final_dist=0.10895180702209473, episode_min_dist=0.10895180702209473, episode_success=0.0, num_episodes_in_replay=120.
+- Operational note: first metrics line appeared at env_steps=5050 after warmup because initial eval triggers immediately when env_steps >= eval_every.
