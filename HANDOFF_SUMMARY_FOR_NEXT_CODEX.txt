@@ -894,3 +894,12 @@
     - `online_collection.csv` logs attempted vs accepted counts for transparency
 - Working memory updated with the design choice + rationale:
   - `docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+[2026-02-15 21:27:40 CST+0800] [codex] Ran a longer online self-improvement run to test convergence (lightweight stochastic eval).
+- Run: `runs/analysis/synth_maze2d_diffuser_probe/20260215-205611` (`summary.json` has full config + final metrics)
+- Protocol: eval uses resampled diverse queries (`num_eval_queries=8`, `query_batch_size=1`, `query_resample_each_eval=true`), threshold `0.2`, prefix horizons `{64,128,192,256}` from one `H=256` rollout.
+- Results: `success@256` improved but did not reach 1.0 (best observed 0.75, last 0.625; high variance due to small N and resampling):
+  - steps: 2000=0.125, 4000=0.25, 6000=0.5, 8000=0.5, 10000=0.5, 12000=0.75, 14000=0.75, 16000=0.75, 18000=0.625.
+- Online-goal success (geometric-sampled) reached ~1.0 quickly; last round shows `planning_success_rate_final_t020=0.980` on accepted episodes.
+- Notable: Option A rejection became substantial late (last round: attempted_eps=82, rejected_short=31, attempted_transitions=5904 vs accepted=4096). True interaction cost should consider attempted transitions.
+- Working memory updated with evidence + interpretation:
+  - `docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`

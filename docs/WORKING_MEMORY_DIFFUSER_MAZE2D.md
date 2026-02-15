@@ -1686,3 +1686,49 @@
 - For transparency, report both:
   - accepted transitions (counted budget) and attempted transitions (true env cost),
   since rejection sampling can hide wasted interaction.
+
+## 2026-02-15 21:27 CST+0800
+### User question
+- Extend the online training beyond the prior ~6k-optimizer-step pilots, log the key metrics, and check whether the algorithm converges to (near) optimal behavior (ideally ~100% success) in Maze2D-umaze. Use lightweight, stochastic (unbiased) intermediate evaluation rather than the full 144-trajectory eval.
+
+### Evidence inspected
+- Long run with Option A online collection + accepted-transition budgets:
+  - run dir: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611`
+  - config: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611/config.json`
+  - intermediate eval logs: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611/progress_metrics.csv`
+  - online collection logs: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611/online_collection.csv`
+  - summary: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611/summary.json`
+
+Key protocol knobs used in this run:
+- Eval distribution: `query_mode=diverse`, `query_min_distance=1.0`, `num_eval_queries=8`, `query_batch_size=1`, `query_resample_each_eval=true` (lightweight, stochastic estimate).
+- Eval success: `goal_success_threshold=0.2`, horizons `{64,128,192,256}` computed as prefix success from one `H=256` rollout.
+- Online collection:
+  - `online_rounds=8`, `online_collect_transition_budget_per_round=4096` (accepted transitions)
+  - early terminate on hit: `online_early_terminate_threshold=0.2`
+  - reject short: `online_min_accepted_episode_len=64` (defaults to horizon)
+  - goal sampling: `online_goal_geom_p=0.02`, `online_goal_geom_min_k=64`, `online_goal_geom_max_k=192`, `online_goal_min_distance=1.0`
+
+### Results (stochastic eval success@256; denominator=8 per eval)
+- From `progress_metrics.csv`:
+  - step 2000: 1/8 = 0.125
+  - step 4000: 2/8 = 0.250
+  - step 6000: 4/8 = 0.500
+  - step 8000: 4/8 = 0.500
+  - step 10000: 4/8 = 0.500
+  - step 12000: 6/8 = 0.750
+  - step 14000: 6/8 = 0.750
+  - step 16000: 6/8 = 0.750
+  - step 18000: 5/8 = 0.625
+- Online collection “planning success” on geometric-sampled goals reached ~1.0 quickly:
+  - e.g. last round in `online_collection.csv`: `planning_success_rate_final_t020=0.980` (accepted episodes).
+
+### Conclusions
+- With 18k optimizer steps and 8 online rounds (each adding 4096 accepted transitions), the realized eval success estimate improved from ~0.125 to as high as ~0.75, but did **not** reach 1.0 on this eval distribution (diverse start-goal pairs with min distance 1.0, threshold 0.2).
+- Because eval resamples queries each time and uses only 8 trajectories per checkpoint, `success@256` is a high-variance (but unbiased) estimator; the late drop from 0.75 -> 0.625 is consistent with estimator noise rather than clear regression.
+- Option A rejection becomes substantial once the planner is strong: e.g. last online round attempted `82` episodes to accept `51` (reject_short `31`), with attempted transitions `5904` vs accepted `4096`. This is logged and should be considered when interpreting true interaction cost.
+
+### Open items
+- If the goal is to *verify convergence* (vs unbiased estimation), consider either:
+  - increase eval sample size modestly (e.g. `num_eval_queries=24`, `query_batch_size=1`) to reduce variance, or
+  - keep a fixed sampled eval subset (`--no_query_resample_each_eval`) for trend tracking and run a separate periodic resampled eval for unbiased estimates.
+- If 100% success is expected on this eval distribution, likely needs either more online budget/training or a change in planning/model capacity (e.g. larger diffusion horizon / capacity), since online-goal success saturates near 1.0 while diverse-eval success remains <1.0.
