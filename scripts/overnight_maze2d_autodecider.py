@@ -201,12 +201,22 @@ def _summarize_progress(progress_csv: Path) -> Dict[str, Any]:
         return out
     out["progress_rows"] = int(len(df))
     out["step_last"] = int(df["step"].iloc[-1]) if "step" in df.columns else int(-1)
-    # Prefer horizon-prefixed success (new protocol).
-    for h in (64, 128, 192, 256):
-        col = f"rollout_goal_success_rate_h{h}"
+    # Prefer horizon-prefixed success (new protocol), but do not assume fixed horizons.
+    # We dynamically discover all available prefix columns so the controller works with
+    # both real runs (64/128/192/256) and smoke tests (e.g. 8/16/32).
+    h_cols: List[Tuple[int, str]] = []
+    for c in df.columns:
+        m = re.match(r"^rollout_goal_success_rate_h(\d+)$", str(c))
+        if m:
+            h = int(m.group(1))
+            h_cols.append((h, c))
+    h_cols.sort(key=lambda t: t[0])
+    for h, col in h_cols:
         if col in df.columns and df[col].notna().any():
             out[f"succ_h{h}_last"] = float(df[col].dropna().iloc[-1])
             out[f"succ_h{h}_max"] = float(df[col].dropna().max())
+    if h_cols:
+        out["max_prefix_horizon"] = int(h_cols[-1][0])
     if "imagined_goal_success_rate" in df.columns and df["imagined_goal_success_rate"].notna().any():
         out["imagined_succ_last"] = float(df["imagined_goal_success_rate"].dropna().iloc[-1])
         out["imagined_succ_max"] = float(df["imagined_goal_success_rate"].dropna().max())
@@ -234,10 +244,12 @@ def _summarize_online(online_csv: Path) -> Dict[str, Any]:
 
 
 def _objective_from_summaries(progress_summary: Mapping[str, Any]) -> float:
-    # Primary objective: best observed success@256 during the run.
-    v = _safe_float(progress_summary.get("succ_h256_max", float("nan")))
+    # Primary objective: best observed success at the longest available prefix horizon.
+    # This is robust to different eval horizon choices (e.g. smoke tests).
+    h = int(progress_summary.get("max_prefix_horizon", 256))
+    v = _safe_float(progress_summary.get(f"succ_h{h}_max", float("nan")))
     if not _isfinite(v):
-        v = _safe_float(progress_summary.get("succ_h256_last", float("nan")))
+        v = _safe_float(progress_summary.get(f"succ_h{h}_last", float("nan")))
     return float(v)
 
 
@@ -524,6 +536,14 @@ def main() -> int:
     ap.add_argument("--monitor-every-sec", type=int, default=300)
     ap.add_argument("--max-trials", type=int, default=12)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument(
+        "--smoke",
+        action="store_true",
+        help=(
+            "Run a tiny, fast configuration for functional testing of the controller "
+            "(small dataset, short horizons, tiny train steps). Not intended for real results."
+        ),
+    )
     ap.add_argument("--promote-prob", type=float, default=0.55, help="Probability of promoting best config to higher budget.")
     ap.add_argument("--bandit-temperature", type=float, default=0.35)
     ap.add_argument("--bandit-explore-prob", type=float, default=0.25)
@@ -541,6 +561,18 @@ def main() -> int:
         raise SystemExit(f"missing main script: {main_py}")
 
     space = default_search_space()
+    if args.smoke:
+        # Fast preset for end-to-end testing: ensure we can (a) launch runs,
+        # (b) see intermediate progress_metrics/online_collection flushes,
+        # (c) write results/importance tables, without spending real GPU hours.
+        space = SearchSpace(
+            train_steps=[20, 40],
+            online_rounds=[1, 2],
+            online_collect_episodes_per_round=[1, 2],
+            online_train_steps_per_round=[10, 20],
+            online_replan_every_n_steps=[4, 8],
+            online_goal_geom_p=[0.08],
+        )
 
     base_dir = root / "runs/analysis/synth_maze2d_diffuser_probe" / f"autodecider_{_stamp()}"
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -577,6 +609,35 @@ def main() -> int:
         "online_planning_success_thresholds": "0.1,0.2",
         "online_planning_success_rel_reduction": 0.9,
     }
+    if args.smoke:
+        # Reduce compute drastically; keep the same code paths exercised.
+        common_args.update(
+            {
+                "device": "cpu",
+                "n_episodes": 4,
+                "episode_len": 32,
+                "max_path_length": 32,
+                "horizon": 16,
+                "n_diffusion_steps": 16,
+                "model_dim": 32,
+                "model_dim_mults": "1,2",
+                "batch_size": 16,
+                "val_every": 10,
+                "val_batches": 1,
+                "eval_goal_every": 10,
+                "save_checkpoint_every": 0,
+                "num_eval_queries": 4,
+                "query_bank_size": 32,
+                "query_batch_size": 1,
+                "eval_rollout_horizon": 32,
+                "eval_success_prefix_horizons": "8,16,32",
+                "wall_aware_plan_samples": 2,
+                "online_collect_episode_len": 32,
+                "online_goal_geom_min_k": 4,
+                "online_goal_geom_max_k": 16,
+                "online_goal_min_distance": 0.3,
+            }
+        )
 
     # Env for MuJoCo + diffuser imports.
     ld_mj = "/root/.mujoco/mujoco210/bin"
@@ -723,4 +784,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
