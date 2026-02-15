@@ -861,3 +861,26 @@
   - frequent updates (`or=4, ep=8, t=1000`): `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-174131/summary.json` final `succ_h256=0.75`
 - Working memory updated with evidence/interpretation:
   - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+[2026-02-15 18:19:55 CST+0800] [codex] Clarified “1 round × 32 episodes” vs “per training step” confusion in online loop.
+- Online collection batches happen at round boundaries: collect `online_collect_episodes_per_round` full env episodes (each up to `online_collect_episode_len`, e.g. 256), append to replay, then retrain for `online_train_steps_per_round` gradient updates.
+- “train steps” in configs/logs are SGD/Adam updates (`global_step`), not env steps; budgets must be reported separately.
+- Working memory updated with this clarification and the exact script evidence:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+[2026-02-15 18:24:40 CST+0800] [codex] Clarified how to keep online env-step budget fixed for sample-efficiency comparisons.
+- Use an explicit env-step budget `B_env` and count collected replay transitions (each transition = 1 env step); stop/truncate collection when budget is met.
+- “rounds × episodes × episode_len” only guarantees constant env steps if episodes are fixed-length; otherwise must count transitions.
+- Gradient updates are a separate compute budget; for controlled ablations tie updates to env steps (or report compute separately).
+- Working memory updated with this protocol note:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+[2026-02-15 18:32:30 CST+0800] [codex] Quantified env-step usage for the 6000-optimizer-step pilots + discussed early-success truncation strategies.
+- For the concrete pilots (`20260215-172148` and `20260215-174131`), training-data transitions were:
+  - offline: `n_episodes=200, episode_len=256` -> 51,200 transitions
+  - online: total 8,192 transitions (either `1×32×256` or `4×8×256`)
+  - total replay transitions after online: 59,392 (confirmed by `online_collection.csv`).
+- Noted that “optimizer steps -> env steps” isn’t intrinsic; env steps are configured via collection budgets and are independent from SGD updates (replay reuse).
+- Proposed goal-consistent ways to avoid wasting the tail after early goal hit:
+  - terminate segment and restart (Option A), or
+  - goal-chaining with explicit episode boundaries so training windows don’t cross goal switches (Option B),
+  - with a minimum segment length (e.g. >= horizon=64) to keep segments useful for training.
+- Working memory updated:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`

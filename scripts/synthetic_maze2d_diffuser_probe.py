@@ -105,6 +105,10 @@ class Config:
     online_train_steps_per_round: int = 2000
     online_collect_episodes_per_round: int = 32
     online_collect_episode_len: int = 256
+    # If >0, collect until this many *accepted* transitions are added per online round.
+    # This makes the online sample budget explicit (env-step budget), which matters once
+    # episodes can end early on success.
+    online_collect_transition_budget_per_round: int = 0
     online_replan_every_n_steps: int = 8
     online_goal_geom_p: float = 0.08
     online_goal_geom_min_k: int = 8
@@ -112,6 +116,13 @@ class Config:
     online_goal_min_distance: float = 0.5
     online_planning_success_thresholds: str = "0.1,0.2"
     online_planning_success_rel_reduction: float = 0.9
+    # Option A (recommended): end an online-collection episode early once it reaches
+    # the goal region, then reset and sample a new (start, goal) pair.
+    online_early_terminate_on_success: bool = True
+    online_early_terminate_threshold: float = 0.2
+    # Reject (discard) online-collection episodes shorter than this many steps.
+    # Use 0 to default to the diffusion horizon.
+    online_min_accepted_episode_len: int = 0
 
 
 class SyntheticDatasetEnv:
@@ -268,6 +279,15 @@ def parse_args() -> Config:
     parser.add_argument("--online_collect_episodes_per_round", type=int, default=Config.online_collect_episodes_per_round)
     parser.add_argument("--online_collect_episode_len", type=int, default=Config.online_collect_episode_len)
     parser.add_argument(
+        "--online_collect_transition_budget_per_round",
+        type=int,
+        default=Config.online_collect_transition_budget_per_round,
+        help=(
+            "If >0, collect until this many accepted transitions are added per online round "
+            "(env-step budget). If 0, collect a fixed number of episodes instead."
+        ),
+    )
+    parser.add_argument(
         "--online_replan_every_n_steps",
         type=int,
         default=Config.online_replan_every_n_steps,
@@ -288,6 +308,26 @@ def parse_args() -> Config:
         type=float,
         default=Config.online_planning_success_rel_reduction,
         help="Success criterion on relative final-distance reduction vs. initial start-goal distance (e.g., 0.9 = 90%%).",
+    )
+    parser.add_argument(
+        "--online_early_terminate_on_success",
+        dest="online_early_terminate_on_success",
+        action="store_true",
+        help="End an online-collection episode early once within --online_early_terminate_threshold of the goal.",
+    )
+    parser.add_argument(
+        "--no_online_early_terminate_on_success",
+        dest="online_early_terminate_on_success",
+        action="store_false",
+        help="Disable early termination on goal success during online collection.",
+    )
+    parser.set_defaults(online_early_terminate_on_success=Config.online_early_terminate_on_success)
+    parser.add_argument("--online_early_terminate_threshold", type=float, default=Config.online_early_terminate_threshold)
+    parser.add_argument(
+        "--online_min_accepted_episode_len",
+        type=int,
+        default=Config.online_min_accepted_episode_len,
+        help="Reject (discard) online-collection episodes shorter than this many steps (0 => diffusion horizon).",
     )
     parser.add_argument(
         "--clip_denoised",
@@ -988,6 +1028,7 @@ def collect_planner_dataset(
     device: torch.device,
     n_episodes: int,
     episode_len: int,
+    transition_budget: int,
     replan_every_n_steps: int,
     goal_geom_p: float,
     goal_geom_min_k: int,
@@ -999,6 +1040,9 @@ def collect_planner_dataset(
     wall_aware_plan_samples: int,
     planning_success_thresholds: Sequence[float],
     planning_success_rel_reduction: float,
+    early_terminate_on_success: bool,
+    early_terminate_threshold: float,
+    min_accepted_episode_len: int,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     env = gym.make(env_name)
     rng = np.random.default_rng(seed)
@@ -1027,7 +1071,47 @@ def collect_planner_dataset(
         float(thr): [] for thr in planning_success_thresholds
     }
 
-    for ep in range(n_episodes):
+    # "episodes" and "transitions" refer to accepted data appended to replay.
+    # We may attempt additional episodes that are rejected (e.g. too short) and are not
+    # counted toward the env-step budget.
+    accepted_episodes = 0
+    accepted_transitions = 0
+    attempted_episodes = 0
+    attempted_transitions = 0
+    rejected_short_episodes = 0
+
+    min_len = max(1, int(min_accepted_episode_len))
+    if transition_budget < 0:
+        raise ValueError("transition_budget must be >= 0")
+    if early_terminate_threshold <= 0.0:
+        raise ValueError("early_terminate_threshold must be > 0")
+
+    # Safety against pathological rejection loops.
+    # Allow ~10x attempts relative to the minimum number of required episodes.
+    if transition_budget > 0:
+        est_min_eps = int(math.ceil(float(transition_budget) / float(min_len)))
+        max_attempts = max(1, est_min_eps * 10)
+    else:
+        max_attempts = max(1, int(n_episodes) * 10)
+
+    while True:
+        if transition_budget > 0:
+            if accepted_transitions >= transition_budget:
+                break
+        else:
+            if accepted_episodes >= n_episodes:
+                break
+
+        attempted_episodes += 1
+        if attempted_episodes > max_attempts:
+            raise RuntimeError(
+                "Online collection exceeded max attempts while trying to gather enough accepted data. "
+                "This usually means early-termination + min-episode-len is rejecting too aggressively. "
+                f"accepted_eps={accepted_episodes} accepted_transitions={accepted_transitions} "
+                f"attempted_eps={attempted_episodes} rejected_short={rejected_short_episodes} "
+                f"min_len={min_len} transition_budget={transition_budget}"
+            )
+
         start_xy, goal_xy, goal_k, sampled_goal_dist = sample_geometric_start_goal_pair(
             observations=replay_observations,
             timeouts=replay_timeouts,
@@ -1047,6 +1131,17 @@ def collect_planner_dataset(
         replan_count = 0
         ep_len = 0
 
+        # Per-episode buffers so we can reject short episodes without counting them.
+        ep_observations: List[np.ndarray] = []
+        ep_actions: List[np.ndarray] = []
+        ep_rewards: List[float] = []
+        ep_terminals: List[bool] = []
+        ep_timeouts: List[bool] = []
+        ep_rollout_wall_hits: List[int] = []
+        ep_dists_after_step: List[float] = []
+        ep_replan_steps: List[int] = []
+        ep_plan_wall_hits: List[int] = []
+
         for t in range(episode_len):
             should_replan = (t % replan_stride == 0) or (plan_offset >= len(planned_actions))
             if should_replan:
@@ -1064,7 +1159,8 @@ def collect_planner_dataset(
                 planned_actions = np.asarray(best_actions, dtype=np.float32)
                 plan_offset = 0
                 replan_count += 1
-                selected_plan_wall_hits.append(int(plan_wall_hits))
+                ep_replan_steps.append(int(t))
+                ep_plan_wall_hits.append(int(plan_wall_hits))
 
             if plan_offset >= len(planned_actions):
                 action = rng.uniform(act_low, act_high).astype(np.float32)
@@ -1074,30 +1170,88 @@ def collect_planner_dataset(
             action = np.clip(action, act_low, act_high).astype(np.float32)
 
             next_obs, reward, done, _ = safe_step(env, action)
+            attempted_transitions += 1
             dist = float(np.linalg.norm(next_obs[:2] - goal_xy))
             min_goal_dist = min(min_goal_dist, dist)
             final_goal_dist = dist
-            rollout_wall_hits.append(count_wall_hits_qpos_frame(maze_arr, next_obs[:2]))
+            wall_hit = int(count_wall_hits_qpos_frame(maze_arr, next_obs[:2]))
 
-            observations.append(obs.copy())
-            actions.append(action.copy())
-            rewards.append(float(reward))
-            terminals.append(bool(done))
-            is_timeout = bool((t == episode_len - 1) or done)
-            timeouts.append(is_timeout)
+            ep_observations.append(obs.copy())
+            ep_actions.append(action.copy())
+            ep_rewards.append(float(reward))
+            ep_terminals.append(bool(done))
+            ep_rollout_wall_hits.append(wall_hit)
+            ep_dists_after_step.append(dist)
+
+            hit_goal = bool(early_terminate_on_success and (dist <= float(early_terminate_threshold)))
+            # Mark boundary if we ended because:
+            # - max episode_len reached, or
+            # - the env terminated (rare in Maze2D), or
+            # - we reached the goal region and choose to terminate early (Option A).
+            is_timeout = bool((t == episode_len - 1) or done or hit_goal)
+            ep_timeouts.append(is_timeout)
 
             obs = next_obs
             ep_len += 1
-            if done:
+            if done or hit_goal:
                 break
 
         if ep_len > 0:
-            timeouts[-1] = True
+            ep_timeouts[-1] = True
+
+        # Reject short episodes entirely (do not add to replay / do not count toward env budget).
+        if ep_len < min_len:
+            rejected_short_episodes += 1
+            continue
+
+        # If collecting by transition budget, optionally truncate the last accepted episode
+        # so we do not exceed the budget. Avoid creating a too-short tail segment that would
+        # be rejected anyway.
+        if transition_budget > 0:
+            remaining = int(transition_budget - accepted_transitions)
+            if remaining <= 0:
+                break
+            if ep_len > remaining:
+                if remaining < min_len:
+                    # Not enough budget left to add a usable episode; stop.
+                    break
+                ep_observations = ep_observations[:remaining]
+                ep_actions = ep_actions[:remaining]
+                ep_rewards = ep_rewards[:remaining]
+                ep_terminals = ep_terminals[:remaining]
+                ep_timeouts = ep_timeouts[:remaining]
+                ep_rollout_wall_hits = ep_rollout_wall_hits[:remaining]
+                ep_dists_after_step = ep_dists_after_step[:remaining]
+                ep_timeouts[-1] = True
+                ep_len = remaining
+
+                # Recompute distance stats on the accepted prefix.
+                min_goal_dist = (
+                    float(min(initial_goal_dist, float(np.min(ep_dists_after_step))))
+                    if ep_dists_after_step
+                    else float(initial_goal_dist)
+                )
+                final_goal_dist = float(ep_dists_after_step[-1]) if ep_dists_after_step else float("inf")
+
+        # Accept episode: append to global replay buffers.
+        observations.extend(ep_observations)
+        actions.extend(ep_actions)
+        rewards.extend(ep_rewards)
+        terminals.extend(ep_terminals)
+        timeouts.extend(ep_timeouts)
+        rollout_wall_hits.extend(ep_rollout_wall_hits)
+        # Keep only replans that occurred within the accepted prefix.
+        for step_idx, wh in zip(ep_replan_steps, ep_plan_wall_hits):
+            if step_idx < ep_len:
+                selected_plan_wall_hits.append(int(wh))
+
+        accepted_episodes += 1
+        accepted_transitions += ep_len
 
         episode_lengths.append(ep_len)
         goal_distances.append(sampled_goal_dist)
         goal_ks.append(goal_k)
-        replans_per_episode.append(replan_count)
+        replans_per_episode.append(int(sum(1 for s in ep_replan_steps if s < ep_len)))
         rollout_min_goal_dist.append(min_goal_dist)
         rollout_final_goal_dist.append(final_goal_dist)
         initial_goal_distances.append(initial_goal_dist)
@@ -1120,8 +1274,13 @@ def collect_planner_dataset(
         "timeouts": np.asarray(timeouts, dtype=np.bool_),
     }
     stats = {
-        "episodes": int(n_episodes),
+        "episodes": int(accepted_episodes),
         "transitions": int(len(new_dataset["observations"])),
+        "episodes_attempted": int(attempted_episodes),
+        "transitions_attempted": int(attempted_transitions),
+        "episodes_rejected_short": int(rejected_short_episodes),
+        "min_accepted_episode_len": int(min_len),
+        "transition_budget": int(transition_budget),
         "episode_len_mean": float(np.mean(episode_lengths)) if episode_lengths else 0.0,
         "episode_len_min": int(np.min(episode_lengths)) if episode_lengths else 0,
         "episode_len_max": int(np.max(episode_lengths)) if episode_lengths else 0,
@@ -1650,8 +1809,28 @@ def main() -> None:
         raise ValueError("--wall_aware_plan_samples must be > 0")
     if cfg.eval_rollout_horizon <= 0:
         raise ValueError("--eval_rollout_horizon must be > 0")
+    if cfg.online_collect_transition_budget_per_round < 0:
+        raise ValueError("--online_collect_transition_budget_per_round must be >= 0")
+    if cfg.online_early_terminate_threshold <= 0.0:
+        raise ValueError("--online_early_terminate_threshold must be > 0")
+    if cfg.online_min_accepted_episode_len < 0:
+        raise ValueError("--online_min_accepted_episode_len must be >= 0")
     if not (0.0 <= cfg.online_planning_success_rel_reduction <= 1.0):
         raise ValueError("--online_planning_success_rel_reduction must be in [0, 1]")
+
+    online_min_accepted_episode_len = int(cfg.online_min_accepted_episode_len) if int(cfg.online_min_accepted_episode_len) > 0 else int(cfg.horizon)
+    if online_min_accepted_episode_len <= 0:
+        raise ValueError("online_min_accepted_episode_len must be > 0")
+    if online_min_accepted_episode_len > int(cfg.online_collect_episode_len):
+        raise ValueError(
+            "--online_min_accepted_episode_len must be <= --online_collect_episode_len "
+            f"(min_accepted={online_min_accepted_episode_len}, collect_episode_len={cfg.online_collect_episode_len})"
+        )
+    if cfg.online_collect_transition_budget_per_round > 0 and cfg.online_collect_transition_budget_per_round < online_min_accepted_episode_len:
+        raise ValueError(
+            "--online_collect_transition_budget_per_round must be >= --online_min_accepted_episode_len "
+            f"(budget={cfg.online_collect_transition_budget_per_round}, min_accepted={online_min_accepted_episode_len})"
+        )
 
     eval_success_prefix_horizons = tuple(
         int(h) for h in parse_int_list(cfg.eval_success_prefix_horizons, "--eval_success_prefix_horizons")
@@ -1914,10 +2093,16 @@ def main() -> None:
     )
 
     if cfg.online_self_improve and cfg.online_rounds > 0:
+        if cfg.online_collect_transition_budget_per_round > 0:
+            collect_desc = f"collect_transition_budget_per_round={cfg.online_collect_transition_budget_per_round}"
+        else:
+            collect_desc = (
+                f"collect_eps_per_round={cfg.online_collect_episodes_per_round} "
+                f"collect_episode_len={cfg.online_collect_episode_len}"
+            )
         print(
             "[online] enabled: "
-            f"rounds={cfg.online_rounds} collect_eps_per_round={cfg.online_collect_episodes_per_round} "
-            f"collect_episode_len={cfg.online_collect_episode_len} "
+            f"rounds={cfg.online_rounds} {collect_desc} "
             f"replan_every_n_steps={cfg.online_replan_every_n_steps} "
             f"train_steps_per_round={cfg.online_train_steps_per_round}"
         )
@@ -1932,6 +2117,7 @@ def main() -> None:
                 device=device,
                 n_episodes=cfg.online_collect_episodes_per_round,
                 episode_len=cfg.online_collect_episode_len,
+                transition_budget=cfg.online_collect_transition_budget_per_round,
                 replan_every_n_steps=cfg.online_replan_every_n_steps,
                 goal_geom_p=cfg.online_goal_geom_p,
                 goal_geom_min_k=cfg.online_goal_geom_min_k,
@@ -1943,6 +2129,9 @@ def main() -> None:
                 wall_aware_plan_samples=cfg.wall_aware_plan_samples,
                 planning_success_thresholds=online_planning_success_thresholds,
                 planning_success_rel_reduction=cfg.online_planning_success_rel_reduction,
+                early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
+                early_terminate_threshold=float(cfg.online_early_terminate_threshold),
+                min_accepted_episode_len=int(online_min_accepted_episode_len),
             )
             raw_dataset = merge_replay_datasets(raw_dataset, planner_dataset)
             replay_transitions = int(len(raw_dataset["observations"]))
@@ -1969,7 +2158,11 @@ def main() -> None:
             rel_tag = threshold_tag(cfg.online_planning_success_rel_reduction)
             print(
                 "[online-collect] "
-                f"round={round_idx} transitions={planner_stats['transitions']} "
+                f"round={round_idx} "
+                f"eps={planner_stats.get('episodes', 0)} "
+                f"transitions={planner_stats['transitions']} "
+                f"attempted_eps={planner_stats.get('episodes_attempted', 0)} "
+                f"reject_short={planner_stats.get('episodes_rejected_short', 0)} "
                 f"replay_transitions={replay_transitions} "
                 f"sampled_goal_dist_mean={planner_stats['sampled_goal_distance_mean']:.3f} "
                 f"sampled_goal_k_mean={planner_stats['sampled_goal_k_mean']:.2f} "

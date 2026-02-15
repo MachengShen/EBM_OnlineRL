@@ -1578,3 +1578,111 @@
 ### Open items
 - Rerun cadence/chunking ablation with a larger eval set (e.g., `num_eval_queries=24`, `query_batch_size>=2`) and possibly multiple seeds.
 - Decide/report an “official” success threshold for main comparisons (likely include both `0.5` for D4RL-style permissive and `0.2` for stricter).
+
+## 2026-02-15 18:19 CST+0800
+### User question
+- Clarify what “1 round × 32 episodes” means in the online loop (vs “32 trajectories per training step” confusion).
+
+### Evidence inspected
+- Online loop structure in `/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py`:
+  - Online outer loop: `for round_idx in range(1, cfg.online_rounds + 1)` (collect -> merge replay -> retrain).
+  - Online collection call: `collect_planner_dataset(... n_episodes=cfg.online_collect_episodes_per_round, episode_len=cfg.online_collect_episode_len, replan_every_n_steps=cfg.online_replan_every_n_steps, ...)`.
+  - Training step counter: `global_step` counts **gradient updates** inside `run_training_steps(...)`.
+- Planner collection inner loop in `collect_planner_dataset(...)`:
+  - Episode loop: `for ep in range(n_episodes)`.
+  - Time loop: `for t in range(episode_len)`.
+  - Receding-horizon planning: replan every `replan_stride = online_replan_every_n_steps` and execute the next planned action.
+
+### Conclusions
+- “1 round × 32 episodes” means:
+  - In the **online replay-expansion phase**, we run the environment for **32 full episodes** (each up to `online_collect_episode_len`, typically 256 env steps), using receding-horizon replanning inside each episode.
+  - We then **append those real transitions** to the replay buffer and **retrain** the diffuser for `online_train_steps_per_round` **gradient steps**.
+- The “6000 training steps” in the pilots refers to the **number of SGD/Adam updates** (diffuser training iterations), not environment steps.
+  - Concretely, those pilots were set up as: `total_grad_updates = offline_train_steps + sum_rounds online_train_steps_per_round = 6000`,
+    while `total_online_env_steps = online_rounds * online_collect_episodes_per_round * online_collect_episode_len` (e.g., `32 * 256 = 8192` env steps total for both `1×32` and `4×8`).
+- So, no: we do **not** roll out 32 trajectories “per training step”. Data collection happens in batches at round boundaries; training steps reuse replay minibatches.
+
+### Open items
+- When reporting sample efficiency, always separate the two budgets explicitly:
+  - **online env steps** (collection cost) vs **gradient updates** (compute cost).
+
+## 2026-02-15 18:24 CST+0800
+### User question
+- For sample-efficiency comparisons, how do we ensure **total environment steps** are constant (rather than holding gradient updates constant)?
+
+### Evidence inspected
+- Online collection returns an explicit transition count (`stats["transitions"]`) from `collect_planner_dataset(...)` in:
+  - `/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py`
+- Online collector structure:
+  - loops over `n_episodes` and `episode_len`, appending one transition per env step.
+- Training counter `global_step` counts optimizer updates (SGD/Adam steps), not env steps.
+
+### Conclusions
+- The clean way to control sample efficiency is to treat **env interaction** as the primary budget:
+  - Define an online env-step budget `B_env` (e.g., 8192, 16384, ...).
+  - During online collection, count how many transitions were actually appended to replay (each transition = 1 env step).
+  - Stop collection once cumulative transitions reach `B_env` (optionally truncate the last episode’s tail to hit `B_env` exactly).
+- The common “rounds × episodes_per_round × episode_len” formula only guarantees constant env steps if every episode is fixed-length.
+  - If episodes can terminate early, you must enforce the budget by counting transitions rather than by counting episodes.
+- Gradient updates are a separate compute budget.
+  - For *pure* sample-efficiency curves, compare performance as a function of `B_env` and (optionally) report compute.
+  - For more controlled ablations, also fix an update schedule tied to env steps (e.g., `U = alpha * B_env`) so differences are not driven purely by more optimizer work.
+- Evaluation rollouts interact with the env but are typically treated as “measurement cost” (kept identical across trials) rather than counted toward training sample budget; if strict accounting is desired, log eval env steps separately.
+
+### Open items
+- Consider adding an explicit `online_env_step_budget` (or `online_total_transitions_budget`) to configs/auto-decider so the controller can vary cadence while holding sample budget fixed.
+
+## 2026-02-15 18:32 CST+0800
+### User question
+- Asked: “How many total env steps for 6000 optimization steps?” and how to truncate early-goal-hit episodes without inconsistent goals.
+
+### Evidence inspected
+- Pilot run configs (both have `train_steps=2000` and `online_train_steps_per_round` summing to total 6000 optimizer steps):
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-172148/config.json`
+    - offline data collection: `n_episodes=200`, `episode_len=256` -> 51,200 env steps worth of stored transitions (collector does not early-terminate here).
+    - online collection: `online_rounds=1`, `online_collect_episodes_per_round=32`, `online_collect_episode_len=256` -> 8,192 transitions.
+    - `online_collection.csv` confirms replay transitions: 59,392 (= 51,200 + 8,192).
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-174131/config.json`
+    - same offline collection; online is 4 rounds x 8 eps x 256 -> 8,192 transitions total.
+    - `online_collection.csv` shows replay transitions reaching 59,392 after round 4.
+
+### Conclusions
+- There is no intrinsic conversion “optimization steps -> env steps” because optimizer updates reuse replay data.
+  - In this codebase, env steps come from (a) offline dataset collection and (b) online dataset collection, and are chosen by config.
+- For the concrete 6000-step pilots above:
+  - training-data env steps (stored transitions): 59,392 total = 51,200 offline + 8,192 online.
+  - evaluation also consumes env steps (rollouts), but those are measurement cost and not appended to replay; keep them identical across runs if comparing sample efficiency.
+- Early goal hit “wasted tail steps” options (goal-consistency preserving):
+  - **Option A (terminate + restart):** If `dist(goal) <= eps` (and optionally `t >= min_len`), end the episode early (mark timeout boundary), then reset and sample a new start-goal pair. This uses remaining env-step budget to collect more episodes.
+  - **Option B (goal-chaining with boundaries):** If success reached, mark an episode boundary at that time (timeout) and immediately sample a new goal, continuing from the current state. Because we insert an episode boundary, training sequence sampling won’t cross goal switches, avoiding “inconsistent goal” sequences while still using all steps for purposeful navigation.
+  - In either option, consider a **minimum segment length** (e.g. >= diffusion horizon 64) so segments still contribute length-64 training windows; otherwise many short segments produce little usable training data.
+
+## 2026-02-15 19:31 CST+0800
+### User question
+- User chose Option A and requested: if online-collected trajectories are shorter than the diffusion window, discard them and do not count them toward the env-step budget.
+
+### Evidence inspected / changes made
+- Implemented Option A early-termination + short-episode rejection + transition-budget collection in:
+  - `/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py`
+  - New online collection knobs:
+    - `online_collect_transition_budget_per_round` (accepted transition budget; 0 => fixed episode count)
+    - `online_early_terminate_on_success` (default True)
+    - `online_early_terminate_threshold` (default 0.2)
+    - `online_min_accepted_episode_len` (0 => defaults to diffusion horizon)
+  - `collect_planner_dataset(...)` now:
+    - terminates an episode early if `dist(goal) <= online_early_terminate_threshold`,
+    - rejects episodes with `ep_len < online_min_accepted_episode_len` (discarded; not appended),
+    - optionally truncates the last accepted episode to fit the remaining transition budget without creating a too-short tail.
+  - Online collection stats now include attempted vs accepted quantities:
+    - `episodes_attempted`, `transitions_attempted`, `episodes_rejected_short`, as well as accepted `episodes`, `transitions`.
+
+### Conclusions
+- This enforces the user-requested accounting: the “env-step budget” for online learning is now naturally represented as
+  - `accepted transitions added to replay`,
+  while rejected short episodes contribute neither replay data nor counted budget.
+- The transition-budget knob is the correct primitive for sample-efficiency ablations once early termination makes episode lengths variable.
+
+### Open items
+- For transparency, report both:
+  - accepted transitions (counted budget) and attempted transitions (true env cost),
+  since rejection sampling can hide wasted interaction.
