@@ -733,3 +733,95 @@
 - Continuity refs:
   - working memory updated with evidence + conclusions:
     /root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md
+[2026-02-14 22:03:20 CST+0800] [codex] Added overnight experiment proposal + verification checklist (no new runs launched yet).
+- User asked: what experiments to run overnight and what still needs verification.
+- Proposal basis:
+  - existing findings in working memory/handoff,
+  - current driver template at `scripts/overnight_online_maze2d_driver.sh`,
+  - new protocol metrics implemented in `scripts/synthetic_maze2d_diffuser_probe.py`.
+- Proposed sequence:
+  1) short sanity run to validate prefix/eval and online planning-success columns,
+  2) distance-aligned goal-sampling ablation,
+  3) replanning-cadence ablation,
+  4) trajectory-diagnosis plots + success@{64,128,192,256} summary.
+- Key verification targets:
+  - success@H monotonicity across shared rollout prefixes,
+  - correlation of online planning-success metrics with eval success@256,
+  - persistence/reduction of collection-vs-eval distance mismatch,
+  - wall-hit behavior under long rollout horizon.
+- Next agent should convert this proposal into concrete commands and monitor-gated stop/go criteria before launching long jobs.
+[2026-02-14 22:13:55 CST+0800] [codex] User revised overnight priorities; plan focus changed.
+- New direction from user:
+  - drop distance-mismatch as primary overnight objective,
+  - prioritize online-loop hyperparameters for sample efficiency:
+    1) trajectories collected before each retrain,
+    2) update frequency/intensity of policy-diffuser training,
+  - keep planning-horizon ablation on latest checkpoint,
+  - skip post-run trajectory diagnosis for now.
+- Working memory updated with this pivot and proposed phase structure.
+- Next agent action:
+  - provide concrete run matrix with fixed env-step budget normalization and monitor-gated 12h schedule.
+[2026-02-14 22:20:20 CST+0800] [codex] User requested replanning-cadence modification concept (beyond horizon-only focus).
+- User highlighted two cadence failure modes:
+  - too small replan interval => long-term inconsistency,
+  - too large replan interval => stale control / low feedback responsiveness.
+- Proposed direction recorded in working memory:
+  - switch from fixed cadence to adaptive/event-triggered cadence with bounded `N_min..N_max` around `N_base`.
+- Next action if approved:
+  - implement trigger-based replanning + logging, then ablate against fixed cadence baselines on sample-efficiency metric.
+[2026-02-14 22:49:45 CST+0800] [codex] Continued execution: created reusable skill + launched live five-step run with monitoring.
+- New reusable skill (for future reuse):
+  - `/root/.codex/skills/ebm-onlinerl-five-step-loop/SKILL.md`
+  - `references/run_matrix.md`
+  - `scripts/launch_five_step.sh`
+  - `scripts/inspect_driver.py`
+- New project driver implementing monitor/assess/reflect/redesign + phase matrix:
+  - `/root/ebm-online-rl-prototype/scripts/overnight_five_step_monitor_driver.sh`
+- Live run status:
+  - persistent session id `3467`
+  - run root: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/five_step_20260214-224647`
+  - first snapshot logged at ~120s: progress file not ready yet (expected during startup collection).
+  - active python process confirmed on S0_sanity; no immediate traceback.
+- Important operational note:
+  - detached `nohup` from this tool context was not reliably persistent; switched to persistent TTY session launch.
+- Next step:
+  - wait for S0_sanity completion, confirm required columns, then continue Phase A/B/C automatically.
+[2026-02-14 23:21:20 CST+0800] [codex] Live monitoring diagnosis for "GPU looks idle" completed.
+- Current active run:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/five_step_20260214-231421`
+  - phase `S0_sanity` process is alive and consuming CPU/GPU.
+- Evidence:
+  - `nvidia-smi`: ~16-20% util, ~742 MiB.
+  - driver snapshots at 23:16/23:18/23:20 say `progress_metrics.csv not ready`.
+  - `run.log` advanced through training step 500, then no new lines yet.
+  - `/proc` counters continue to increase; process state `R`.
+- Interpretation:
+  - job is not dead; likely in long evaluation/rollout block after step 500 with sparse logging.
+- Next immediate action:
+  - keep polling until first progress row, then validate required columns and continue monitor-gated phases.
+[2026-02-14 23:24:40 CST+0800] [codex] User asked for self-reprompt mechanism to avoid idle gaps.
+- Constraint recorded: chat thread cannot autonomously emit messages without a new user turn.
+- Deployable workaround identified: scheduled `codex exec` monitor loop via cron/tmux that repeatedly audits runs and appends updates to:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+  - `/root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`
+- Next action: if user approves, implement a reusable script + cron template with heartbeat, stale-run detection, and stop/go rules.
+[2026-02-15 12:22:25 CST+0800] [codex] Clarified reprompt automation modes.
+- `status-only`: monitor + report only, no autonomous run-control.
+- `auto-decider`: monitor + policy-based actions (continue/stop/launch next phase) under explicit thresholds.
+- Mechanism clarified: periodic scheduled `codex exec` calls (same agent context style), not an opaque separate supervisor.
+- Guardrail preference recorded: deterministic metric gates should dominate decisions; narrative explanation is secondary.
+[2026-02-15 12:31:55 CST+0800] [codex] Recommendation framing recorded for overnight autonomy.
+- Suggested safe default: deterministic driver runs phases; Codex loop is status-only for continuous updates.
+- If user wants true autonomy under uncertainty, choose conservative auto-decider with fixed policy + bounded actions.
+- Noted clarification: auto-decider necessarily uses latest results; policy is predetermined.
+[2026-02-15 12:40:35 CST+0800] [codex] User requested aggressive autonomous auto-decider.
+- Goal: agent adaptively identifies influential online-loop hyperparams from new results and redesigns next runs overnight.
+- Implication: move from fixed grid to explore/exploit policy with parameter bounds + budget normalization.
+- Next action: propose (and if approved, implement) conservative guardrails: fixed env-step budget per trial, replication checks, early-stop rules, and logged decision rationale.
+[2026-02-15 12:55:40 CST+0800] [codex] Implemented aggressive overnight auto-decider (variable budgets allowed).
+- Patched `scripts/synthetic_maze2d_diffuser_probe.py` to flush `progress_metrics.csv` and `online_collection.csv` incrementally.
+- Added adaptive controller `scripts/overnight_maze2d_autodecider.py` producing:
+  - `runs/.../autodecider_*/autodecider_results.csv`
+  - `runs/.../autodecider_*/autodecider_importance.csv`
+- Added tmux launcher `scripts/launch_overnight_maze2d_autodecider_tmux.sh`.
+- Design doc: `docs/plans/2026-02-15-maze2d-autodecider.md`.

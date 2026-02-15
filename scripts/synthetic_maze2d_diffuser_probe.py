@@ -1875,6 +1875,13 @@ def main() -> None:
                 progress["eval_query_mode"] = cfg.query_mode
                 progress["eval_query_pairs"] = int(len(eval_query_pairs))
                 progress_rows.append(progress)
+                # Persist progress incrementally so monitor/auto-decider loops can
+                # observe intermediate results (otherwise this file only exists
+                # after the entire run finishes, which defeats online monitoring).
+                try:
+                    pd.DataFrame(progress_rows).to_csv(logdir / "progress_metrics.csv", index=False)
+                except Exception as e:
+                    print(f"[warn] failed to flush progress_metrics.csv: {e}")
                 short_h = int(eval_success_prefix_horizons[0])
                 long_h = int(eval_success_prefix_horizons[-1])
                 rollout_short = float(progress.get(f"rollout_goal_success_rate_h{short_h}", np.nan))
@@ -1948,6 +1955,11 @@ def main() -> None:
                 **planner_stats,
             }
             online_collection_rows.append(round_row)
+            # Persist online-collection stats incrementally for monitoring/deciders.
+            try:
+                pd.DataFrame(online_collection_rows).to_csv(logdir / "online_collection.csv", index=False)
+            except Exception as e:
+                print(f"[warn] failed to flush online_collection.csv: {e}")
             threshold_summaries = " ".join(
                 [
                     f"s@{thr:.2f}={planner_stats.get(f'planning_success_rate_final_t{threshold_tag(thr)}', float('nan')):.3f}"
