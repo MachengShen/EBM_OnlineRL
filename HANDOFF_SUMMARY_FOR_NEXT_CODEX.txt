@@ -825,3 +825,39 @@
   - `runs/.../autodecider_*/autodecider_importance.csv`
 - Added tmux launcher `scripts/launch_overnight_maze2d_autodecider_tmux.sh`.
 - Design doc: `docs/plans/2026-02-15-maze2d-autodecider.md`.
+[2026-02-15 13:57:01 ] [autodecider] completed 20260215-135456_ts20_or1_ep2_t20_rp8_gp080 succ_h256=nan cfg=ts20_or1_ep2_t20_rp8_gp080
+[2026-02-15 13:59:07 ] [autodecider] completed 20260215-135701_ts20_or1_ep2_t10_rp4_gp080 succ_h256=nan cfg=ts20_or1_ep2_t10_rp4_gp080
+[2026-02-15 14:02:30 ] [autodecider] completed 20260215-140025_ts20_or1_ep1_t20_rp8_gp080 succ_h256=nan cfg=ts20_or1_ep1_t20_rp8_gp080
+[2026-02-15 14:04:36 ] [autodecider] completed 20260215-140230_ts20_or1_ep2_t10_rp8_gp080 succ_h256=nan cfg=ts20_or1_ep2_t10_rp8_gp080
+[2026-02-15 14:08:35 ] [autodecider] completed 20260215-140630_ts20_or1_ep1_t20_rp8_gp080 succ_h256=0.0000 cfg=ts20_or1_ep1_t20_rp8_gp080
+[2026-02-15 14:10:41 ] [autodecider] completed 20260215-140835_ts20_or1_ep2_t20_rp4_gp080 succ_h256=0.0000 cfg=ts20_or1_ep2_t20_rp4_gp080
+[2026-02-15 14:12:55 CST+0800] [codex] Summarized overnight_20260213 results + validated auto-decider with smoke tests.
+- Completed overnight results live at:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745/diagnosis_rollout_replay/summary.csv`
+  - difficulty mismatch at `.../difficulty_gap_summary.csv`.
+- five_step_20260214-* runs produced no progress_metrics (stalled/never started), so no Phase A/B/C summary available.
+- Auto-decider smoke test evidence:
+  - `autodecider_20260215-140630` includes `autodecider_results.csv` + `autodecider_importance.csv`.
+- Controller bugfix committed: robust prefix-horizon objective parsing + --smoke mode (`6db6898`).
+[2026-02-15 14:15:25 CST+0800] [codex] User asked for session id; no maze2d_autodecider tmux session exists yet.
+- auto-decider tests were run non-interactively; attachable tmux session requires launching via `scripts/launch_overnight_maze2d_autodecider_tmux.sh`.
+[2026-02-15 16:43:35 CST+0800] [codex] Clarified “h192 plotted subset” success numbers vs “diverse eval success ~0”.
+- `A=0.75/B=0.25/C=0.25` are `rollout_success_rate_plotted` on a tiny plotted subset (`n_plotted=8`) at `H=192` with threshold `0.5`:
+  - gallery copy: `/var/tmp/vibe-kanban/worktrees/13d3-investigate-trai/EBM_OnlineRL/figures/maze2d_plot_gallery_20260214/receding_final_plot_refresh_summary_h192.csv`
+  - A metrics show only `query_id in {0,1}` and `len(rollout_xy_json)=193` (H=192).
+- “diverse eval success ~0” refers to `n=144` (24x6) at `H=64` in:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745/diagnosis_rollout_replay/summary.csv`
+  - `len(realized_xy_json)=65` confirms H=64 there.
+- Working-memory entry appended with evidence + interpretation:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+[2026-02-15 18:02:55 CST+0800] [codex] Validated prefix-horizon eval monotonicity + ran 2 cadence/chunking pilots.
+- Added checkpoint eval harness:
+  - `/root/ebm-online-rl-prototype/scripts/eval_synth_maze2d_checkpoint_prefix.py`
+- Existing checkpoint (A_baseline) prefix success from ONE H=256 rollout is monotonic:
+  - thr=0.5: `eval_prefix_20260215-171548/metrics.json` -> `success@64/128/192/256 = 0.0/0.8125/0.8125/0.8125`
+  - thr=0.2: `eval_prefix_20260215-172022/metrics.json` -> `0.0/0.4375/0.75/0.75`
+- Online-loop cadence pilots (small eval: 8 queries x 1 sample, thr=0.2):
+  - chunky updates (`or=1, ep=32, t=4000`): `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-172148/summary.json` final `succ_h256=0.625`
+  - frequent updates (`or=4, ep=8, t=1000`): `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-174131/summary.json` final `succ_h256=0.75`
+- Working memory updated with evidence/interpretation:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`

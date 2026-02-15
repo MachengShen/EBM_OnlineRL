@@ -1412,3 +1412,169 @@
 
 ### Open items
 - Budget promotion currently reruns from scratch (no checkpoint resume). If needed, add resume support to reduce waste.
+
+## 2026-02-15 13:57 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-135456/20260215-135456_ts20_or1_ep2_t20_rp8_gp080`
+- cfg: `ts20_or1_ep2_t20_rp8_gp080`
+- objective (best succ@256): `nan`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-135456/autodecider_results.csv`
+
+## 2026-02-15 13:59 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-135456/20260215-135701_ts20_or1_ep2_t10_rp4_gp080`
+- cfg: `ts20_or1_ep2_t10_rp4_gp080`
+- objective (best succ@256): `nan`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-135456/autodecider_results.csv`
+
+## 2026-02-15 14:02 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140025/20260215-140025_ts20_or1_ep1_t20_rp8_gp080`
+- cfg: `ts20_or1_ep1_t20_rp8_gp080`
+- objective (best succ@256): `nan`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140025/autodecider_results.csv`
+
+## 2026-02-15 14:04 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140025/20260215-140230_ts20_or1_ep2_t10_rp8_gp080`
+- cfg: `ts20_or1_ep2_t10_rp8_gp080`
+- objective (best succ@256): `nan`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140025/autodecider_results.csv`
+
+## 2026-02-15 14:08 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140630/20260215-140630_ts20_or1_ep1_t20_rp8_gp080`
+- cfg: `ts20_or1_ep1_t20_rp8_gp080`
+- objective (best succ@256): `0.0000`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140630/autodecider_results.csv`
+
+## 2026-02-15 14:10 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140630/20260215-140835_ts20_or1_ep2_t20_rp4_gp080`
+- cfg: `ts20_or1_ep2_t20_rp4_gp080`
+- objective (best succ@256): `0.0000`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260215-140630/autodecider_results.csv`
+
+## 2026-02-15 14:12 CST+0800
+### User question
+- Summarize last night's experimental results.
+- Test the new Maze2D auto-decider loop end-to-end.
+
+### Evidence inspected
+- Completed overnight run with evaluation artifacts:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745`
+  - key summaries:
+    - `diagnosis_rollout_replay/summary.csv`
+    - `diagnosis_rollout_replay/difficulty_gap_summary.csv`
+    - `receding_final_plot_refresh_20260214/receding_final_plot_refresh_summary.csv` (h64 plotted subset)
+    - `receding_final_plot_refresh_h192_longer/receding_final_plot_refresh_summary_h192.csv` (h192 plotted subset)
+  - progress curves:
+    - `A_baseline_rh8_p008/progress_metrics.csv`
+    - `B_easier_goals_rh8/progress_metrics.csv`
+    - `C_replan16/progress_metrics.csv`
+- Attempted five-step monitor runs (no usable results):
+  - `five_step_20260214-224109`, `...-224238`, `...-224323`, `...-224530`, `...-224647`, `...-231421`
+  - each only has `S0_sanity/` and driver snapshots of `progress_metrics.csv not ready`.
+- Auto-decider smoke test run roots:
+  - `autodecider_20260215-140630` (created during this testing)
+
+### Conclusions (results)
+- On the diverse eval queries (24 queries x 6 samples = 144 trajectories), realized success at short rollout budgets was effectively ~0:
+  - `diagnosis_rollout_replay/summary.csv` reports success_rate=0.0 for A/B/C.
+- Increasing rollout horizon materially improves success (demonstrated on an 8-trajectory plotted subset):
+  - h64 plotted subset: success 0.0 (all A/B/C).
+  - h192 plotted subset: A=0.75, B=0.25, C=0.25, with nontrivial wall-hit counts.
+- Strong difficulty mismatch exists between online-collected goals and eval goals:
+  - eval start-goal mean distance ~2.5,
+  - online sampled goal distance mean ~0.54-0.68,
+  and online rollouts achieve very small min/final distances, but this does not transfer to the harder eval set.
+
+### Conclusions (auto-decider testing)
+- Implemented and validated an end-to-end functional test via `--smoke` mode:
+  - controller launches trials, times out/terminates, parses `progress_metrics.csv` mid-run, writes `autodecider_results.csv` and `autodecider_importance.csv`.
+  - run root evidence: `autodecider_20260215-140630`.
+- Fixed a bug in horizon parsing in the controller (regex over-escaped), so it can score any available prefix horizon.
+
+### Open items
+- For real overnight use, the heavy eval configuration (24x6 trajectories, wall-aware multi-sample planning) can be slow; consider reducing eval cost for the controller (smaller query count / batch size) and using online planning-success as a cheaper proxy signal.
+
+## 2026-02-15 14:15 CST+0800
+### User question
+- User asked for the "session ID" (to attach/monitor).
+
+### Evidence inspected
+- `tmux ls` shows existing sessions `0`, `2`, `3` (unrelated node processes).
+- No tmux session matching `maze2d_autodecider_*` currently exists (auto-decider tests were run non-interactively).
+
+### Conclusions
+- There is no attachable tmux session for the auto-decider right now.
+- To get an attachable session, launch via `scripts/launch_overnight_maze2d_autodecider_tmux.sh`, which creates a tmux session named `maze2d_autodecider_<timestamp>` and prints it.
+
+## 2026-02-15 16:43 CST+0800
+### User question
+- Asked what “h192 plotted subset: A=0.75, B=0.25, C=0.25” means, and why that does not contradict “diverse eval success is ~0”.
+
+### Evidence inspected
+- Plotted-subset (h192) summary CSV (copied into gallery):
+  - `/var/tmp/vibe-kanban/worktrees/13d3-investigate-trai/EBM_OnlineRL/figures/maze2d_plot_gallery_20260214/receding_final_plot_refresh_summary_h192.csv`
+  - contains: `horizon_eval=192`, `n_plotted=8`, `goal_success_threshold=0.5`, and `rollout_success_rate_plotted` values (A=0.75, B=0.25, C=0.25).
+- One plotted-subset metrics file (A):
+  - `/var/tmp/vibe-kanban/worktrees/13d3-investigate-trai/EBM_OnlineRL/figures/maze2d_plot_gallery_20260214/A_baseline_rh8_p008_receding_query_metrics_h192.csv`
+  - shows `8` rows total, covering only `query_id in {0,1}` (6 samples for query 0, 2 for query 1).
+  - `len(rollout_xy_json)=193` for a row, consistent with a `192`-step rollout horizon.
+  - recomputing `count(rollout_min_goal_distance <= 0.5)` gives `6/8 = 0.75` for A.
+- Diverse eval diagnosis summary (h64 rollout budget):
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745/diagnosis_rollout_replay/summary.csv`
+  - contains `n=144` (24 queries x 6 samples) and `success_rate=0.0` for A/B/C.
+  - for that diverse-eval set, `len(realized_xy_json)=65` in:
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745/diagnosis_rollout_replay/A_baseline_rh8_p008_imagined_vs_realized.csv`
+    which is consistent with `64` rollout steps (plus the start state).
+
+### Conclusions
+- Yes: `A=0.75, B=0.25, C=0.25` are success rates, but **only for the plotted subset**:
+  - success is computed on `n_plotted=8` trajectories (not on the full diverse eval set),
+  - using a longer rollout horizon `H=192`,
+  - with an absolute goal threshold `0.5` (success if `rollout_min_goal_distance <= 0.5` at any time in the rollout).
+- The “diverse eval success is ~0” statement refers to a **different denominator and a shorter horizon**:
+  - `n=144` trajectories on the diverse eval set,
+  - rollout budget `H=64`,
+  - and for that `H=64` budget, none of the 144 trajectories reach the 0.5-threshold (min realized distance is >= ~0.87 in A).
+- Therefore there is no contradiction: the 0.75/0.25 values are not “global success on the diverse eval set”; they are “success@192 on a tiny plotted subset”.
+
+### Open items
+- If we want a direct apples-to-apples comparison, we should compute `success@H` on the **same** diverse eval set for `H in {64,128,192,256}` (or compute prefix metrics from a single long `H=256` rollout trace per trajectory).
+
+## 2026-02-15 18:02 CST+0800
+### User question
+- Requested: evaluate using multiple horizons during training (prefix `success@H`), ensure success increases monotonically with horizon when computed from one longest rollout, and revisit whether `goal_success_threshold=0.5` is too loose.
+- Also requested: validate online-loop hyperparameters affecting sample efficiency, especially “how many planner trajectories per diffusion training” (data chunk size vs update cadence).
+
+### Evidence inspected
+- Checkpoint eval harness added (computes all `success@{64,128,192,256}` from one `H=256` rollout per sample):
+  - `/root/ebm-online-rl-prototype/scripts/eval_synth_maze2d_checkpoint_prefix.py`
+- Verified monotonic prefix success on an existing trained checkpoint (A_baseline):
+  - threshold=0.5:
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745/A_baseline_rh8_p008/eval_prefix_20260215-171548/metrics.json`
+    - `success_by_prefix`: `[(64, 0.0), (128, 0.8125), (192, 0.8125), (256, 0.8125)]` (16 rollouts total).
+  - threshold=0.2:
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/overnight_20260213-223745/A_baseline_rh8_p008/eval_prefix_20260215-172022/metrics.json`
+    - `success_by_prefix`: `[(64, 0.0), (128, 0.4375), (192, 0.75), (256, 0.75)]`.
+- Two small online-loop cadence/chunking experiments (same total online episodes = 32, same total train steps = 6000; eval set is small: 8 queries x 1 sample, threshold=0.2):
+  - Chunky updates: `online_rounds=1`, `collect_eps_per_round=32`, `train_steps_per_round=4000`
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-172148/summary.json`
+    - final `success@H`: `h64=0.0, h128=0.0, h192=0.5, h256=0.625`.
+  - Frequent updates: `online_rounds=4`, `collect_eps_per_round=8`, `train_steps_per_round=1000`
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-174131/summary.json`
+    - final `success@H`: `h64=0.0, h128=0.0, h192=0.375, h256=0.75`.
+
+### Conclusions
+- Prefix-horizon evaluation is now “one-rollout, many prefixes”: compute metrics from a single `H_max` rollout trace, which guarantees `success@64 <= success@128 <= success@192 <= success@256` if success is defined via prefix-min distance.
+- The success threshold matters materially:
+  - `0.5` is substantially more permissive than `0.2` on the same evaluated rollouts.
+- Preliminary (noisy) cadence result:
+  - with the same total online env episodes, more frequent replay expansion / retraining (smaller chunks, more rounds) *can* improve `success@256` (0.75 vs 0.625 here),
+  - but this should be re-checked with a larger evaluation set to reduce variance.
+
+### Open items
+- Rerun cadence/chunking ablation with a larger eval set (e.g., `num_eval_queries=24`, `query_batch_size>=2`) and possibly multiple seeds.
+- Decide/report an “official” success threshold for main comparisons (likely include both `0.5` for D4RL-style permissive and `0.2` for stricter).
