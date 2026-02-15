@@ -884,3 +884,13 @@
   - with a minimum segment length (e.g. >= horizon=64) to keep segments useful for training.
 - Working memory updated:
   - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+[2026-02-15 19:33:30 CST+0800] [codex] Implemented Option A online-collection truncation + short-episode rejection with an explicit transition budget.
+- Commit: `2f8f1ba` “Online collect: early-terminate on success, reject short eps, add transition budget”
+- Code changes in:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+    - new config knobs: `online_collect_transition_budget_per_round`, `online_early_terminate_on_success`, `online_early_terminate_threshold`, `online_min_accepted_episode_len`
+    - collector rejects `ep_len < online_min_accepted_episode_len` and does not append/count those transitions
+    - collector can early-terminate on `dist(goal) <= online_early_terminate_threshold` (Option A)
+    - `online_collection.csv` logs attempted vs accepted counts for transparency
+- Working memory updated with the design choice + rationale:
+  - `docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
