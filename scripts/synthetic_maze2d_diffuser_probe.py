@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
 import random
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Sequence, Tuple
 
 import gym
 import matplotlib.patches as mpatches
@@ -55,6 +56,7 @@ def cycle(dataloader: Iterable):
 
 
 REPLAY_NPZ_KEYS = ("observations", "actions", "rewards", "terminals", "timeouts")
+REPLAY_METADATA_JSON_KEY = "replay_metadata_json"
 
 
 def _episode_len_stats_from_timeouts(timeouts: np.ndarray) -> Dict[str, float]:
@@ -77,33 +79,70 @@ def _episode_len_stats_from_timeouts(timeouts: np.ndarray) -> Dict[str, float]:
     }
 
 
-def save_replay_npz(
+def _replay_array_digest(arr: np.ndarray, max_items: int = 8192) -> str:
+    flat = np.asarray(arr).reshape(-1)
+    if flat.size > max_items * 2:
+        sample = np.concatenate([flat[:max_items], flat[-max_items:]], axis=0)
+    else:
+        sample = flat
+    h = hashlib.sha256()
+    h.update(np.asarray(sample).tobytes(order="C"))
+    return h.hexdigest()
+
+
+def replay_dataset_fingerprint(dataset: Mapping[str, np.ndarray]) -> str:
+    h = hashlib.sha256()
+    for key in REPLAY_NPZ_KEYS:
+        arr = np.asarray(dataset[key])
+        h.update(key.encode("utf-8"))
+        h.update(str(arr.shape).encode("utf-8"))
+        h.update(str(arr.dtype).encode("utf-8"))
+        h.update(_replay_array_digest(arr).encode("utf-8"))
+    return h.hexdigest()[:16]
+
+
+def save_replay_artifact(
     path: Path,
-    dataset: Dict[str, np.ndarray],
+    dataset: Mapping[str, np.ndarray],
     action_low: np.ndarray,
     action_high: np.ndarray,
-    collection_stats: Dict[str, float],
-) -> None:
+    collection_stats: Mapping[str, float],
+    metadata: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {k: np.asarray(dataset[k]) for k in REPLAY_NPZ_KEYS}
+    replay_episodes = int(count_episodes_from_timeouts(payload["timeouts"]))
+    replay_transitions = int(len(payload["observations"]))
+    replay_meta: Dict[str, Any] = dict(metadata or {})
+    replay_meta.setdefault("format", "maze2d_replay_npz_v1")
+    replay_meta.setdefault("transitions", replay_transitions)
+    replay_meta.setdefault("episodes", replay_episodes)
+    replay_meta.setdefault("fingerprint", replay_dataset_fingerprint(payload))
     payload["action_low"] = np.asarray(action_low, dtype=np.float32)
     payload["action_high"] = np.asarray(action_high, dtype=np.float32)
     payload["collection_stats_json"] = np.asarray(json.dumps(collection_stats), dtype=np.str_)
+    payload[REPLAY_METADATA_JSON_KEY] = np.asarray(json.dumps(replay_meta), dtype=np.str_)
     np.savez_compressed(str(path), **payload)
+    return replay_meta
 
 
-def load_replay_npz(path: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, Dict[str, float]]:
+def load_replay_artifact(path: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, Dict[str, float], Dict[str, Any]]:
     path = Path(path)
     with np.load(str(path), allow_pickle=False) as f:
         dataset = {k: np.asarray(f[k]) for k in REPLAY_NPZ_KEYS}
         action_low = np.asarray(f["action_low"], dtype=np.float32) if "action_low" in f else None
         action_high = np.asarray(f["action_high"], dtype=np.float32) if "action_high" in f else None
         stats_json = str(f["collection_stats_json"].item()) if "collection_stats_json" in f else "{}"
+        meta_json = str(f[REPLAY_METADATA_JSON_KEY].item()) if REPLAY_METADATA_JSON_KEY in f else "{}"
     try:
         stats = dict(json.loads(stats_json))
     except Exception:
         stats = {}
+    try:
+        replay_meta = dict(json.loads(meta_json))
+    except Exception:
+        replay_meta = {}
     # Ensure keys expected by downstream logging exist.
     stats.setdefault("wall_rejects", 0)
     stats.setdefault("failed_steps", 0)
@@ -111,6 +150,33 @@ def load_replay_npz(path: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.n
         stats.update(_episode_len_stats_from_timeouts(dataset["timeouts"]))
     if action_low is None or action_high is None:
         raise ValueError(f"Replay file missing action_low/action_high: {path}")
+    replay_meta.setdefault("format", "maze2d_replay_npz_v1")
+    replay_meta.setdefault("transitions", int(len(dataset["observations"])))
+    replay_meta.setdefault("episodes", int(count_episodes_from_timeouts(dataset["timeouts"])))
+    replay_meta.setdefault("fingerprint", replay_dataset_fingerprint(dataset))
+    return dataset, action_low, action_high, stats, replay_meta
+
+
+def save_replay_npz(
+    path: Path,
+    dataset: Dict[str, np.ndarray],
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    collection_stats: Dict[str, float],
+    metadata: Mapping[str, Any] | None = None,
+) -> None:
+    _ = save_replay_artifact(
+        path=path,
+        dataset=dataset,
+        action_low=action_low,
+        action_high=action_high,
+        collection_stats=collection_stats,
+        metadata=metadata,
+    )
+
+
+def load_replay_npz(path: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, Dict[str, float]]:
+    dataset, action_low, action_high, stats, _ = load_replay_artifact(path=path)
     return dataset, action_low, action_high, stats
 
 
@@ -157,10 +223,14 @@ class Config:
     eval_rollout_replan_every_n_steps: int = 8
     eval_rollout_horizon: int = 256
     eval_success_prefix_horizons: str = "64,128,192,256"
+    eval_waypoint_mode: str = "none"  # {"none","feasible","infeasible"}
+    eval_waypoint_t: int = 0  # 0 => horizon//2
+    eval_waypoint_eps: float = 0.2
     wall_aware_planning: bool = True
     wall_aware_plan_samples: int = 8
     save_checkpoint_every: int = 5000
     online_self_improve: bool = False
+    disable_online_collection: bool = False
     online_rounds: int = 0
     online_train_steps_per_round: int = 2000
     online_collect_episodes_per_round: int = 32
@@ -195,6 +265,8 @@ class Config:
     collector_ckpt_path: str = ""
     collector_ckpt_weights: str = "ema"  # {"ema","online"} -> checkpoint key {ema,model}
     # Optional: load/save replay snapshots for fixed-replay experiments.
+    replay_import_path: str = ""
+    replay_export_path: str = ""
     replay_load_npz: str = ""
     replay_save_npz: str = ""
     # If >0: after collecting this online round, snapshot replay and freeze further appends.
@@ -319,6 +391,25 @@ def parse_args() -> Config:
         help="Comma-separated rollout prefixes for success metrics (e.g. 64,128,192,256).",
     )
     parser.add_argument(
+        "--eval_waypoint_mode",
+        type=str,
+        default=Config.eval_waypoint_mode,
+        choices=["none", "feasible", "infeasible"],
+        help="Optional eval mode: add a waypoint constraint at timestep --eval_waypoint_t.",
+    )
+    parser.add_argument(
+        "--eval_waypoint_t",
+        type=int,
+        default=Config.eval_waypoint_t,
+        help="Waypoint timestep (0 => planning_horizon//2). Clamped to [1, planning_horizon-2].",
+    )
+    parser.add_argument(
+        "--eval_waypoint_eps",
+        type=float,
+        default=Config.eval_waypoint_eps,
+        help="Waypoint hit threshold in qpos xy distance.",
+    )
+    parser.add_argument(
         "--wall_aware_planning",
         dest="wall_aware_planning",
         action="store_true",
@@ -351,6 +442,19 @@ def parse_args() -> Config:
         help="Disable online self-improvement rounds.",
     )
     parser.set_defaults(online_self_improve=Config.online_self_improve)
+    parser.add_argument(
+        "--disable_online_collection",
+        dest="disable_online_collection",
+        action="store_true",
+        help="Keep online rounds/training but skip new env collection (fixed replay).",
+    )
+    parser.add_argument(
+        "--enable_online_collection",
+        dest="disable_online_collection",
+        action="store_false",
+        help="Enable normal online collection (default).",
+    )
+    parser.set_defaults(disable_online_collection=Config.disable_online_collection)
     parser.add_argument("--online_rounds", type=int, default=Config.online_rounds)
     parser.add_argument("--online_train_steps_per_round", type=int, default=Config.online_train_steps_per_round)
     parser.add_argument("--online_collect_episodes_per_round", type=int, default=Config.online_collect_episodes_per_round)
@@ -432,6 +536,18 @@ def parse_args() -> Config:
         default=Config.collector_ckpt_weights,
         choices=["ema", "online"],
         help="If --collector_ckpt_path is set, which weights to load: ema or online.",
+    )
+    parser.add_argument(
+        "--replay_import_path",
+        type=str,
+        default=Config.replay_import_path,
+        help="Optional: import replay artifact (.npz) before training (preferred alias).",
+    )
+    parser.add_argument(
+        "--replay_export_path",
+        type=str,
+        default=Config.replay_export_path,
+        help="Optional: export replay artifact (.npz) at end of run (preferred alias).",
     )
     parser.add_argument(
         "--replay_load_npz",
@@ -1016,6 +1132,63 @@ def sample_geometric_start_goal_pair(
     raise RuntimeError("Failed to sample start/goal pair from replay observations.")
 
 
+def resolve_waypoint_t(planning_horizon: int, raw_waypoint_t: int) -> int:
+    if int(planning_horizon) < 3:
+        return max(0, int(planning_horizon) - 1)
+    if int(raw_waypoint_t) > 0:
+        t_wp = int(raw_waypoint_t)
+    else:
+        t_wp = int(planning_horizon) // 2
+    return int(max(1, min(int(planning_horizon) - 2, t_wp)))
+
+
+def sample_eval_waypoint(
+    mode: str,
+    replay_observations: np.ndarray,
+    start_xy: np.ndarray,
+    goal_xy: np.ndarray,
+    waypoint_eps: float,
+    rng: np.random.Generator,
+) -> np.ndarray | None:
+    mode = str(mode)
+    if mode == "none":
+        return None
+
+    pts = np.asarray(replay_observations, dtype=np.float32)
+    if pts.ndim != 2 or pts.shape[0] == 0:
+        return None
+    xy = pts[:, :2]
+    start_xy = np.asarray(start_xy, dtype=np.float32).reshape(2)
+    goal_xy = np.asarray(goal_xy, dtype=np.float32).reshape(2)
+
+    min_sep = max(0.35, float(waypoint_eps) * 2.0)
+    d_start = np.linalg.norm(xy - start_xy[None, :], axis=1)
+    d_goal = np.linalg.norm(xy - goal_xy[None, :], axis=1)
+    candidates = xy[(d_start >= min_sep) & (d_goal >= min_sep)]
+    if len(candidates) == 0:
+        candidates = xy
+    feasible_wp = np.asarray(candidates[int(rng.integers(len(candidates)))], dtype=np.float32)
+    if mode == "feasible":
+        return feasible_wp
+    if mode != "infeasible":
+        raise ValueError(f"Unsupported eval waypoint mode: {mode}")
+
+    # Best-effort infeasible waypoint: move far outside replay support box.
+    mins = np.min(xy, axis=0)
+    maxs = np.max(xy, axis=0)
+    span = np.maximum(maxs - mins, np.asarray([1e-3, 1e-3], dtype=np.float32))
+    margin = np.maximum(0.5, span * 0.25)
+    center = 0.5 * (mins + maxs)
+    direction = feasible_wp - center
+    norm = float(np.linalg.norm(direction))
+    if norm < 1e-6:
+        direction = np.asarray([1.0, -1.0], dtype=np.float32)
+        norm = float(np.linalg.norm(direction))
+    direction = direction / (norm + 1e-8)
+    infeasible_wp = feasible_wp + direction * (span + margin)
+    return np.asarray(infeasible_wp, dtype=np.float32)
+
+
 @torch.no_grad()
 def compute_val_loss(
     model: GaussianDiffusion,
@@ -1048,6 +1221,8 @@ def sample_imagined_trajectory(
     horizon: int,
     device: torch.device,
     n_samples: int,
+    waypoint_xy: np.ndarray | None = None,
+    waypoint_t: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     start_obs = np.asarray([start_xy[0], start_xy[1], 0.0, 0.0], dtype=np.float32)
     goal_obs = np.asarray([goal_xy[0], goal_xy[1], 0.0, 0.0], dtype=np.float32)
@@ -1056,6 +1231,12 @@ def sample_imagined_trajectory(
         0: normalize_condition(dataset, start_obs, device).repeat(n_samples, 1),
         horizon - 1: normalize_condition(dataset, goal_obs, device).repeat(n_samples, 1),
     }
+    if waypoint_xy is not None:
+        if waypoint_t is None:
+            raise ValueError("waypoint_t must be provided when waypoint_xy is set")
+        waypoint_obs = np.zeros(dataset.observation_dim, dtype=np.float32)
+        waypoint_obs[:2] = np.asarray(waypoint_xy, dtype=np.float32)
+        cond[int(waypoint_t)] = normalize_condition(dataset, waypoint_obs, device).repeat(n_samples, 1)
 
     model.eval()
     samples = model.conditional_sample(cond, horizon=horizon, verbose=False)
@@ -1083,6 +1264,8 @@ def sample_imagined_trajectory_from_obs(
     horizon: int,
     device: torch.device,
     n_samples: int,
+    waypoint_xy: np.ndarray | None = None,
+    waypoint_t: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     start_obs = np.asarray(start_obs, dtype=np.float32).reshape(-1)
     if start_obs.shape[0] != dataset.observation_dim:
@@ -1096,6 +1279,12 @@ def sample_imagined_trajectory_from_obs(
         0: normalize_condition(dataset, start_obs, device).repeat(n_samples, 1),
         horizon - 1: normalize_condition(dataset, goal_obs, device).repeat(n_samples, 1),
     }
+    if waypoint_xy is not None:
+        if waypoint_t is None:
+            raise ValueError("waypoint_t must be provided when waypoint_xy is set")
+        waypoint_obs = np.zeros(dataset.observation_dim, dtype=np.float32)
+        waypoint_obs[:2] = np.asarray(waypoint_xy, dtype=np.float32)
+        cond[int(waypoint_t)] = normalize_condition(dataset, waypoint_obs, device).repeat(n_samples, 1)
     model.eval()
     samples = model.conditional_sample(cond, horizon=horizon, verbose=False)
     if hasattr(samples, "trajectories"):
@@ -1123,6 +1312,8 @@ def sample_best_plan_from_obs(
     maze_arr: np.ndarray | None,
     wall_aware_planning: bool,
     wall_aware_plan_samples: int,
+    waypoint_xy: np.ndarray | None = None,
+    waypoint_t: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     n_candidates = 1
     if wall_aware_planning and maze_arr is not None:
@@ -1136,6 +1327,8 @@ def sample_best_plan_from_obs(
         horizon=horizon,
         device=device,
         n_samples=n_candidates,
+        waypoint_xy=waypoint_xy,
+        waypoint_t=waypoint_t,
     )
 
     best_idx = 0
@@ -1549,6 +1742,8 @@ def rollout_to_goal(
     wall_aware_planning: bool,
     wall_aware_plan_samples: int,
     open_loop_actions: np.ndarray | None = None,
+    waypoint_xy: np.ndarray | None = None,
+    waypoint_t: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, float, float, int]:
     obs = reset_rollout_start(rollout_env, start_xy=start_xy)
     min_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
@@ -1595,6 +1790,8 @@ def rollout_to_goal(
                     maze_arr=maze_arr,
                     wall_aware_planning=wall_aware_planning,
                     wall_aware_plan_samples=wall_aware_plan_samples,
+                    waypoint_xy=waypoint_xy,
+                    waypoint_t=waypoint_t,
                 )
                 planned_actions = np.asarray(best_actions, dtype=np.float32)
                 plan_offset = 0
@@ -1644,6 +1841,7 @@ def evaluate_goal_progress(
     model: GaussianDiffusion,
     dataset: GoalDataset,
     env_name: str,
+    replay_observations: np.ndarray,
     query_pairs: List[Tuple[np.ndarray, np.ndarray]],
     planning_horizon: int,
     rollout_horizon: int,
@@ -1656,6 +1854,9 @@ def evaluate_goal_progress(
     maze_arr: np.ndarray | None,
     wall_aware_planning: bool,
     wall_aware_plan_samples: int,
+    eval_waypoint_mode: str = "none",
+    eval_waypoint_t: int = 0,
+    eval_waypoint_eps: float = 0.2,
 ) -> Dict[str, float]:
     imagined_successes: List[float] = []
     imagined_goal_errors: List[float] = []
@@ -1687,11 +1888,24 @@ def evaluate_goal_progress(
     ]
     imagined_wall_hits: List[int] = []
     rollout_wall_hits: List[int] = []
+    waypoint_hits: List[float] = []
+    waypoint_min_distances: List[float] = []
+    waypoint_t_effective = resolve_waypoint_t(int(planning_horizon), int(eval_waypoint_t))
+    waypoint_rng = np.random.default_rng(20260219 + int(planning_horizon) + len(query_pairs))
 
     rollout_env = gym.make(env_name)
     dt = float(getattr(rollout_env.unwrapped, "dt", 1.0))
 
     for qid, (start_xy, goal_xy) in enumerate(query_pairs):
+        waypoint_xy = sample_eval_waypoint(
+            mode=eval_waypoint_mode,
+            replay_observations=replay_observations,
+            start_xy=start_xy,
+            goal_xy=goal_xy,
+            waypoint_eps=float(eval_waypoint_eps),
+            rng=waypoint_rng,
+        )
+        waypoint_t = waypoint_t_effective if waypoint_xy is not None else None
         observations, actions = sample_imagined_trajectory(
             model=model,
             dataset=dataset,
@@ -1700,6 +1914,8 @@ def evaluate_goal_progress(
             horizon=planning_horizon,
             device=device,
             n_samples=n_samples,
+            waypoint_xy=waypoint_xy,
+            waypoint_t=waypoint_t,
         )
 
         for sid in range(observations.shape[0]):
@@ -1746,7 +1962,17 @@ def evaluate_goal_progress(
                 wall_aware_planning=wall_aware_planning,
                 wall_aware_plan_samples=wall_aware_plan_samples,
                 open_loop_actions=act_traj if rollout_mode == "open_loop" else None,
+                waypoint_xy=waypoint_xy,
+                waypoint_t=waypoint_t,
             )
+            if waypoint_xy is not None:
+                waypoint_d = np.linalg.norm(
+                    np.asarray(rollout_xy, dtype=np.float32)[:, :2] - np.asarray(waypoint_xy, dtype=np.float32)[None, :],
+                    axis=1,
+                )
+                waypoint_min = float(np.min(waypoint_d))
+                waypoint_min_distances.append(waypoint_min)
+                waypoint_hits.append(float(waypoint_min <= float(eval_waypoint_eps)))
 
             # Essential protocol choice: compute all success@h metrics from the same
             # realized rollout so @64/@128/@192/@256 are directly comparable.
@@ -1787,6 +2013,11 @@ def evaluate_goal_progress(
         "eval_rollout_replan_every_n_steps": int(rollout_replan_every_n_steps),
         "eval_rollout_horizon": int(rollout_horizon),
         "eval_success_prefix_horizons": ",".join(str(int(h)) for h in success_prefix_horizons),
+        "eval_waypoint_mode": str(eval_waypoint_mode),
+        "eval_waypoint_t": int(waypoint_t_effective),
+        "eval_waypoint_eps": float(eval_waypoint_eps),
+        "waypoint_hit_rate": float(np.mean(waypoint_hits)) if waypoint_hits else float("nan"),
+        "waypoint_min_distance_mean": float(np.mean(waypoint_min_distances)) if waypoint_min_distances else float("nan"),
         "imagined_goal_success_rate": float(np.mean(imagined_successes)) if imagined_successes else float("nan"),
         "imagined_goal_error_mean": float(np.mean(imagined_goal_errors)) if imagined_goal_errors else float("nan"),
         "imagined_pregoal_success_rate": float(np.mean(imagined_pregoal_successes)) if imagined_pregoal_successes else float("nan"),
@@ -1966,6 +2197,18 @@ def plot_query_trajectories(
 def main() -> None:
     cfg = parse_args()
     set_seed(cfg.seed)
+    replay_import_path = str(cfg.replay_import_path or cfg.replay_load_npz).strip()
+    replay_export_path = str(cfg.replay_export_path or cfg.replay_save_npz).strip()
+    if cfg.replay_import_path and cfg.replay_load_npz and str(cfg.replay_import_path) != str(cfg.replay_load_npz):
+        raise ValueError(
+            f"Conflicting replay import flags: --replay_import_path={cfg.replay_import_path} "
+            f"vs --replay_load_npz={cfg.replay_load_npz}"
+        )
+    if cfg.replay_export_path and cfg.replay_save_npz and str(cfg.replay_export_path) != str(cfg.replay_save_npz):
+        raise ValueError(
+            f"Conflicting replay export flags: --replay_export_path={cfg.replay_export_path} "
+            f"vs --replay_save_npz={cfg.replay_save_npz}"
+        )
     # Ensure prints show up promptly even when stdout/stderr are piped (e.g. via `tee`).
     try:
         import sys
@@ -1996,6 +2239,10 @@ def main() -> None:
         raise ValueError("--online_min_accepted_episode_len must be >= 0")
     if not (0.0 <= cfg.online_planning_success_rel_reduction <= 1.0):
         raise ValueError("--online_planning_success_rel_reduction must be in [0, 1]")
+    if cfg.eval_waypoint_eps <= 0.0:
+        raise ValueError("--eval_waypoint_eps must be > 0")
+    if cfg.eval_waypoint_mode not in {"none", "feasible", "infeasible"}:
+        raise ValueError("--eval_waypoint_mode must be one of: none, feasible, infeasible")
 
     online_min_accepted_episode_len = int(cfg.online_min_accepted_episode_len) if int(cfg.online_min_accepted_episode_len) > 0 else int(cfg.horizon)
     if online_min_accepted_episode_len <= 0:
@@ -2029,8 +2276,11 @@ def main() -> None:
         raise ValueError("--online_planning_success_thresholds must be > 0")
     if cfg.fixed_replay_snapshot_round < 0:
         raise ValueError("--fixed_replay_snapshot_round must be >= 0")
-    if cfg.replay_load_npz and not Path(cfg.replay_load_npz).is_file():
-        raise FileNotFoundError(f"--replay_load_npz not found: {cfg.replay_load_npz}")
+    if replay_import_path and not Path(replay_import_path).is_file():
+        raise FileNotFoundError(
+            f"Replay import file not found: {replay_import_path} "
+            f"(from --replay_import_path/--replay_load_npz)"
+        )
     if cfg.collector_ckpt_path and not Path(cfg.collector_ckpt_path).is_file():
         raise FileNotFoundError(f"--collector_ckpt_path not found: {cfg.collector_ckpt_path}")
 
@@ -2051,10 +2301,17 @@ def main() -> None:
     )
     print(
         "[setup] "
-        f"replay_load_npz={cfg.replay_load_npz or 'none'} "
-        f"replay_save_npz={cfg.replay_save_npz or 'none'} "
+        f"replay_import_path={replay_import_path or 'none'} "
+        f"replay_export_path={replay_export_path or 'none'} "
         f"fixed_replay_snapshot_round={cfg.fixed_replay_snapshot_round} "
-        f"fixed_replay_snapshot_npz={cfg.fixed_replay_snapshot_npz or 'default'}"
+        f"fixed_replay_snapshot_npz={cfg.fixed_replay_snapshot_npz or 'default'} "
+        f"disable_online_collection={int(bool(cfg.disable_online_collection))}"
+    )
+    print(
+        "[setup] "
+        f"eval_waypoint_mode={cfg.eval_waypoint_mode} "
+        f"eval_waypoint_t={cfg.eval_waypoint_t} "
+        f"eval_waypoint_eps={cfg.eval_waypoint_eps:.3f}"
     )
     maze_arr = load_maze_arr_from_env(cfg.env)
     if maze_arr is None:
@@ -2065,9 +2322,18 @@ def main() -> None:
             f"wall_cells={int(np.sum(maze_arr == 10))}"
         )
 
-    if cfg.replay_load_npz:
-        raw_dataset, action_low, action_high, collection_stats = load_replay_npz(Path(cfg.replay_load_npz))
-        print(f"[data] loaded replay_npz={cfg.replay_load_npz}")
+    replay_import_meta: Dict[str, Any] = {}
+    if replay_import_path:
+        raw_dataset, action_low, action_high, collection_stats, replay_import_meta = load_replay_artifact(
+            Path(replay_import_path)
+        )
+        print(f"[data] loaded replay_artifact={replay_import_path}")
+        print(
+            "[replay] imported "
+            f"transitions={int(replay_import_meta.get('transitions', len(raw_dataset['observations'])))} "
+            f"episodes={int(replay_import_meta.get('episodes', count_episodes_from_timeouts(raw_dataset['timeouts'])))} "
+            f"fingerprint={replay_import_meta.get('fingerprint', 'na')}"
+        )
     else:
         raw_dataset, action_low, action_high, collection_stats = collect_random_dataset(
             env_name=cfg.env,
@@ -2092,13 +2358,13 @@ def main() -> None:
         f"failed_steps={collection_stats['failed_steps']}"
     )
 
-    if cfg.replay_load_npz:
+    if replay_import_path:
         # With use_padding=False, GoalDataset needs at least one episode with length > horizon,
         # otherwise it yields zero windows and downstream training silently becomes nonsense.
         ep_max = int(collection_stats.get("episode_len_max", 0) or 0)
         if ep_max > 0 and int(cfg.horizon) >= ep_max:
             raise ValueError(
-                f"--replay_load_npz {cfg.replay_load_npz} has episode_len_max={ep_max}, but --horizon={cfg.horizon}. "
+                f"Replay import {replay_import_path} has episode_len_max={ep_max}, but --horizon={cfg.horizon}. "
                 "With use_padding=False this produces zero training windows. "
                 "Set --horizon < episode_len_max (or load a replay with longer episodes)."
             )
@@ -2167,6 +2433,28 @@ def main() -> None:
         if collector_ckpt_model is not None:
             return collector_ckpt_model
         return ema_model if cfg.collector_weights == "ema" else diffusion
+
+    def replay_metadata(stage: str, round_idx: int | None = None) -> Dict[str, Any]:
+        meta: Dict[str, Any] = {
+            "env_id": str(cfg.env),
+            "seed": int(cfg.seed),
+            "collector_method": "diffuser",
+            "collector_weights": str(cfg.collector_weights),
+            "collection_budget": {
+                "offline_n_episodes": int(cfg.n_episodes),
+                "offline_episode_len": int(cfg.episode_len),
+                "online_rounds": int(cfg.online_rounds),
+                "online_collect_episodes_per_round": int(cfg.online_collect_episodes_per_round),
+                "online_collect_transition_budget_per_round": int(cfg.online_collect_transition_budget_per_round),
+                "online_collect_episode_len": int(cfg.online_collect_episode_len),
+            },
+            "normalization": "raw_env_space; training normalizer=LimitsNormalizer",
+            "stage": str(stage),
+            "source_replay_fingerprint": replay_import_meta.get("fingerprint", ""),
+        }
+        if round_idx is not None:
+            meta["round_idx"] = int(round_idx)
+        return meta
 
     metrics_rows: List[Dict[str, float]] = []
     online_collection_rows: List[Dict[str, float]] = []
@@ -2280,6 +2568,7 @@ def main() -> None:
                     model=model_for_eval(),
                     dataset=dataset_for_eval,
                     env_name=cfg.env,
+                    replay_observations=raw_dataset["observations"],
                     query_pairs=eval_query_pairs,
                     planning_horizon=cfg.horizon,
                     rollout_horizon=cfg.eval_rollout_horizon,
@@ -2292,6 +2581,9 @@ def main() -> None:
                     maze_arr=maze_arr,
                     wall_aware_planning=cfg.wall_aware_planning,
                     wall_aware_plan_samples=cfg.wall_aware_plan_samples,
+                    eval_waypoint_mode=cfg.eval_waypoint_mode,
+                    eval_waypoint_t=cfg.eval_waypoint_t,
+                    eval_waypoint_eps=cfg.eval_waypoint_eps,
                 )
                 progress["step"] = int(global_step)
                 progress["phase"] = phase
@@ -2329,7 +2621,8 @@ def main() -> None:
                     f"imag_wall={progress['imagined_in_wall_points_mean']:.2f} "
                     f"roll_wall={progress['rollout_in_wall_points_mean']:.2f} "
                     f"state_vel_rel={progress['state_velocity_rel_mean']:.3f} "
-                    f"vel_act_rel={progress['velocity_action_rel_mean']:.3f}"
+                    f"vel_act_rel={progress['velocity_action_rel_mean']:.3f} "
+                    f"waypoint_hit={progress.get('waypoint_hit_rate', float('nan')):.3f}"
                 )
 
     run_training_steps(
@@ -2354,7 +2647,9 @@ def main() -> None:
             f"replan_every_n_steps={cfg.online_replan_every_n_steps} "
             f"train_steps_per_round={cfg.online_train_steps_per_round}"
         )
-        replay_frozen = False
+        replay_frozen = bool(cfg.disable_online_collection)
+        if replay_frozen:
+            print("[online] disable_online_collection=1 -> fixed replay mode for all rounds")
         for round_idx in range(1, cfg.online_rounds + 1):
             did_collect = False
             if not replay_frozen:
@@ -2407,6 +2702,7 @@ def main() -> None:
                         action_low=action_low,
                         action_high=action_high,
                         collection_stats=collection_stats,
+                        metadata=replay_metadata(stage="snapshot", round_idx=round_idx),
                     )
                     print(f"[replay] snapshot_saved round={round_idx} path={snap_path}")
                     replay_frozen = True
@@ -2500,18 +2796,26 @@ def main() -> None:
     elif cfg.online_self_improve:
         print("[online] enabled but --online_rounds <= 0, skipping replay expansion rounds.")
 
-    if cfg.replay_save_npz:
-        save_path = Path(cfg.replay_save_npz)
+    replay_export_meta: Dict[str, Any] = {}
+    if replay_export_path:
+        save_path = Path(replay_export_path)
         if not save_path.is_absolute():
             save_path = logdir / save_path
-        save_replay_npz(
+        replay_export_meta = save_replay_artifact(
             path=save_path,
             dataset=raw_dataset,
             action_low=action_low,
             action_high=action_high,
             collection_stats=collection_stats,
+            metadata=replay_metadata(stage="final_export"),
         )
-        print(f"[replay] saved_final path={save_path}")
+        print(
+            "[replay] saved_final "
+            f"path={save_path} "
+            f"transitions={int(replay_export_meta.get('transitions', len(raw_dataset['observations'])))} "
+            f"episodes={int(replay_export_meta.get('episodes', count_episodes_from_timeouts(raw_dataset['timeouts'])))} "
+            f"fingerprint={replay_export_meta.get('fingerprint', 'na')}"
+        )
 
     metrics_df = pd.DataFrame(metrics_rows)
     metrics_df.to_csv(logdir / "metrics.csv", index=False)
@@ -2535,7 +2839,18 @@ def main() -> None:
     query_rows: List[Dict[str, float]] = []
     final_query_pairs = last_eval_query_pairs if len(last_eval_query_pairs) > 0 else query_pairs_for_step(step=global_step)
     query_rollout_env = gym.make(cfg.env)
+    query_waypoint_rng = np.random.default_rng(cfg.seed + 424242)
+    query_waypoint_t = resolve_waypoint_t(int(cfg.horizon), int(cfg.eval_waypoint_t))
     for qid, (start_xy, goal_xy) in enumerate(final_query_pairs):
+        query_waypoint_xy = sample_eval_waypoint(
+            mode=cfg.eval_waypoint_mode,
+            replay_observations=raw_dataset["observations"],
+            start_xy=start_xy,
+            goal_xy=goal_xy,
+            waypoint_eps=float(cfg.eval_waypoint_eps),
+            rng=query_waypoint_rng,
+        )
+        query_waypoint_t_use = query_waypoint_t if query_waypoint_xy is not None else None
         observations, actions = sample_imagined_trajectory(
             model=model_for_eval(),
             dataset=current_dataset,
@@ -2544,6 +2859,8 @@ def main() -> None:
             horizon=cfg.horizon,
             device=device,
             n_samples=cfg.query_batch_size,
+            waypoint_xy=query_waypoint_xy,
+            waypoint_t=query_waypoint_t_use,
         )
 
         for sid in range(observations.shape[0]):
@@ -2566,7 +2883,19 @@ def main() -> None:
                 wall_aware_planning=cfg.wall_aware_planning,
                 wall_aware_plan_samples=cfg.wall_aware_plan_samples,
                 open_loop_actions=actions[sid] if cfg.eval_rollout_mode == "open_loop" else None,
+                waypoint_xy=query_waypoint_xy,
+                waypoint_t=query_waypoint_t_use,
             )
+            waypoint_min_dist = float("nan")
+            waypoint_hit = float("nan")
+            if query_waypoint_xy is not None:
+                wp_d = np.linalg.norm(
+                    np.asarray(rollout_xy, dtype=np.float32)[:, :2]
+                    - np.asarray(query_waypoint_xy, dtype=np.float32)[None, :],
+                    axis=1,
+                )
+                waypoint_min_dist = float(np.min(wp_d))
+                waypoint_hit = float(waypoint_min_dist <= float(cfg.eval_waypoint_eps))
             query_rows.append(
                 {
                     "query_id": qid,
@@ -2586,6 +2915,11 @@ def main() -> None:
                     "rollout_mode": cfg.eval_rollout_mode,
                     "rollout_min_goal_distance": float(rollout_min_goal_dist),
                     "rollout_final_goal_error": float(rollout_final_goal_dist),
+                    "waypoint_x": float(query_waypoint_xy[0]) if query_waypoint_xy is not None else float("nan"),
+                    "waypoint_y": float(query_waypoint_xy[1]) if query_waypoint_xy is not None else float("nan"),
+                    "waypoint_t": int(query_waypoint_t_use) if query_waypoint_t_use is not None else -1,
+                    "waypoint_min_distance": float(waypoint_min_dist),
+                    "waypoint_hit": float(waypoint_hit),
                     "imagined_in_wall_points": int(imagined_wall_hits),
                     "rollout_in_wall_points": int(rollout_wall_hits),
                     "xy_json": json.dumps(xy.tolist()),
@@ -2614,10 +2948,14 @@ def main() -> None:
         "eval_weights": str(cfg.eval_weights),
         "collector_ckpt_path": str(cfg.collector_ckpt_path),
         "collector_ckpt_weights": str(cfg.collector_ckpt_weights),
-        "replay_load_npz": str(cfg.replay_load_npz),
-        "replay_save_npz": str(cfg.replay_save_npz),
+        "replay_import_path": str(replay_import_path),
+        "replay_export_path": str(replay_export_path),
+        "replay_import_meta": replay_import_meta if replay_import_path else {},
+        "replay_export_meta": replay_export_meta if replay_export_path else {},
+        "replay_fingerprint": replay_dataset_fingerprint(raw_dataset),
         "fixed_replay_snapshot_round": int(cfg.fixed_replay_snapshot_round),
         "fixed_replay_snapshot_npz": str(cfg.fixed_replay_snapshot_npz),
+        "disable_online_collection": bool(cfg.disable_online_collection),
         "dataset_transitions": int(len(raw_dataset["observations"])),
         "dataset_episodes": int(count_episodes_from_timeouts(raw_dataset["timeouts"])),
         "dataset_collection_stats": collection_stats,
@@ -2638,6 +2976,9 @@ def main() -> None:
         "eval_rollout_replan_every_n_steps": int(cfg.eval_rollout_replan_every_n_steps),
         "eval_rollout_horizon": int(cfg.eval_rollout_horizon),
         "eval_success_prefix_horizons": [int(h) for h in eval_success_prefix_horizons],
+        "eval_waypoint_mode": str(cfg.eval_waypoint_mode),
+        "eval_waypoint_t": int(cfg.eval_waypoint_t),
+        "eval_waypoint_eps": float(cfg.eval_waypoint_eps),
         "wall_aware_planning": bool(cfg.wall_aware_planning),
         "wall_aware_plan_samples": int(cfg.wall_aware_plan_samples),
         "online_planning_success_thresholds": [float(thr) for thr in online_planning_success_thresholds],
@@ -2646,6 +2987,8 @@ def main() -> None:
         "query_mean_line_deviation_mean": float(query_df["mean_line_deviation"].mean()) if len(query_df) else np.nan,
         "query_rollout_min_goal_distance_mean": float(query_df["rollout_min_goal_distance"].mean()) if len(query_df) else np.nan,
         "query_rollout_final_goal_error_mean": float(query_df["rollout_final_goal_error"].mean()) if len(query_df) else np.nan,
+        "query_waypoint_hit_rate": float(query_df["waypoint_hit"].mean()) if ("waypoint_hit" in query_df.columns and len(query_df)) else np.nan,
+        "query_waypoint_min_distance_mean": float(query_df["waypoint_min_distance"].mean()) if ("waypoint_min_distance" in query_df.columns and len(query_df)) else np.nan,
         "query_imagined_in_wall_points_mean": float(query_df["imagined_in_wall_points"].mean()) if len(query_df) else np.nan,
         "query_rollout_in_wall_points_mean": float(query_df["rollout_in_wall_points"].mean()) if len(query_df) else np.nan,
         "progress_last": progress_rows[-1] if progress_rows else {},

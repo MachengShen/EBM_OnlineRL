@@ -38,6 +38,8 @@ class Config:
     seed: int = 0
     device: str = "cuda:0"
     logdir: str = ""
+    replay_import_path: str = ""
+    replay_export_path: str = ""
 
     # Offline synthetic replay collection (random actions).
     n_episodes: int = 400
@@ -98,6 +100,7 @@ class Config:
 
     # Online self-improvement loop (collector is SAC policy + HER training).
     online_self_improve: bool = False
+    disable_online_collection: bool = False
     online_rounds: int = 0
     online_train_steps_per_round: int = 2000
     online_collect_episodes_per_round: int = 32
@@ -133,6 +136,8 @@ def parse_args() -> Config:
     p.add_argument("--seed", type=int, default=Config.seed)
     p.add_argument("--device", type=str, default=Config.device)
     p.add_argument("--logdir", type=str, default=Config.logdir)
+    p.add_argument("--replay_import_path", type=str, default=Config.replay_import_path)
+    p.add_argument("--replay_export_path", type=str, default=Config.replay_export_path)
 
     p.add_argument("--n_episodes", type=int, default=Config.n_episodes)
     p.add_argument("--episode_len", type=int, default=Config.episode_len)
@@ -202,6 +207,18 @@ def parse_args() -> Config:
     p.add_argument("--online_self_improve", dest="online_self_improve", action="store_true")
     p.add_argument("--no_online_self_improve", dest="online_self_improve", action="store_false")
     p.set_defaults(online_self_improve=Config.online_self_improve)
+    p.add_argument(
+        "--disable_online_collection",
+        dest="disable_online_collection",
+        action="store_true",
+        help="Skip online env collection; keep training on fixed replay only.",
+    )
+    p.add_argument(
+        "--enable_online_collection",
+        dest="disable_online_collection",
+        action="store_false",
+    )
+    p.set_defaults(disable_online_collection=Config.disable_online_collection)
     p.add_argument("--online_rounds", type=int, default=Config.online_rounds)
     p.add_argument("--online_train_steps_per_round", type=int, default=Config.online_train_steps_per_round)
     p.add_argument("--online_collect_episodes_per_round", type=int, default=Config.online_collect_episodes_per_round)
@@ -1062,25 +1079,46 @@ def main() -> None:
         raise ValueError("--her_k_per_transition must be > 0")
     if cfg.reward_mode not in {"sparse", "shaped"}:
         raise ValueError("--reward_mode must be sparse|shaped")
+    if cfg.replay_import_path and not Path(cfg.replay_import_path).is_file():
+        raise FileNotFoundError(f"--replay_import_path not found: {cfg.replay_import_path}")
 
     logdir = dprobe.make_logdir(cfg)
     with open(logdir / "config.json", "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2, sort_keys=True)
-    print(f"[setup] logdir={logdir}")
+    print(
+        f"[setup] logdir={logdir} "
+        f"replay_import_path={cfg.replay_import_path or 'none'} "
+        f"replay_export_path={cfg.replay_export_path or 'none'} "
+        f"disable_online_collection={int(bool(cfg.disable_online_collection))}"
+    )
 
     device = torch.device(cfg.device)
     maze_arr = dprobe.load_maze_arr_from_env(cfg.env)
 
-    # Collect offline replay with random actions (same as diffuser/gcbc scripts).
-    raw_dataset, _action_low_scaled, _action_high_scaled, collection_stats = dprobe.collect_random_dataset(
-        env_name=cfg.env,
-        n_episodes=cfg.n_episodes,
-        episode_len=cfg.episode_len,
-        action_scale=cfg.action_scale,
-        seed=cfg.seed,
-        corridor_aware_data=cfg.corridor_aware_data,
-        corridor_max_resamples=cfg.corridor_max_resamples,
-    )
+    replay_import_meta: Dict[str, Any] = {}
+    # Collect offline replay with random actions (same as diffuser/gcbc scripts),
+    # or import an existing replay artifact for collector/learner swap runs.
+    if cfg.replay_import_path:
+        raw_dataset, _action_low_scaled, _action_high_scaled, collection_stats, replay_import_meta = dprobe.load_replay_artifact(
+            Path(cfg.replay_import_path)
+        )
+        print(
+            "[replay] imported "
+            f"path={cfg.replay_import_path} "
+            f"transitions={int(replay_import_meta.get('transitions', len(raw_dataset['observations'])))} "
+            f"episodes={int(replay_import_meta.get('episodes', dprobe.count_episodes_from_timeouts(raw_dataset['timeouts'])))} "
+            f"fingerprint={replay_import_meta.get('fingerprint', 'na')}"
+        )
+    else:
+        raw_dataset, _action_low_scaled, _action_high_scaled, collection_stats = dprobe.collect_random_dataset(
+            env_name=cfg.env,
+            n_episodes=cfg.n_episodes,
+            episode_len=cfg.episode_len,
+            action_scale=cfg.action_scale,
+            seed=cfg.seed,
+            corridor_aware_data=cfg.corridor_aware_data,
+            corridor_max_resamples=cfg.corridor_max_resamples,
+        )
 
     # Get true env action bounds for SAC scaling.
     tmp_env = gym.make(cfg.env)
@@ -1270,6 +1308,8 @@ def main() -> None:
 
     if cfg.online_self_improve and cfg.online_rounds > 0:
         online_min_accepted_episode_len = int(cfg.online_min_accepted_episode_len) if cfg.online_min_accepted_episode_len > 0 else int(cfg.horizon)
+        if cfg.disable_online_collection:
+            print("[online] disable_online_collection=1 -> fixed replay mode for all rounds")
         for r in range(int(cfg.online_rounds)):
             round_idx = r + 1
             print(
@@ -1279,28 +1319,46 @@ def main() -> None:
                 f"collect_episode_len={cfg.online_collect_episode_len} "
                 f"decision_every={cfg.online_replan_every_n_steps}"
             )
-            additions, stats = collect_policy_dataset(
-                agent=agent,
-                env_name=cfg.env,
-                replay_observations=raw_dataset["observations"],
-                replay_timeouts=raw_dataset["timeouts"],
-                n_episodes=int(cfg.online_collect_episodes_per_round),
-                episode_len=int(cfg.online_collect_episode_len),
-                transition_budget=int(cfg.online_collect_transition_budget_per_round),
-                decision_every_n_steps=int(cfg.online_replan_every_n_steps),
-                goal_geom_p=float(cfg.online_goal_geom_p),
-                goal_geom_min_k=int(cfg.online_goal_geom_min_k),
-                goal_geom_max_k=int(cfg.online_goal_geom_max_k),
-                goal_min_distance=float(cfg.online_goal_min_distance),
-                seed=int(cfg.seed + 2021 + round_idx),
-                maze_arr=maze_arr,
-                planning_success_thresholds=online_planning_success_thresholds,
-                planning_success_rel_reduction=float(cfg.online_planning_success_rel_reduction),
-                early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
-                early_terminate_threshold=float(cfg.online_early_terminate_threshold),
-                min_accepted_episode_len=int(online_min_accepted_episode_len),
-            )
-            raw_dataset = dprobe.merge_replay_datasets(raw_dataset, additions)
+            did_collect = False
+            if cfg.disable_online_collection:
+                stats = {
+                    "episodes": 0.0,
+                    "transitions": 0.0,
+                    "attempted_episodes": 0.0,
+                    "rejected_short_episodes": 0.0,
+                    "episode_len_mean": float("nan"),
+                    "sampled_goal_distance_mean": float("nan"),
+                    "sampled_goal_k_mean": float("nan"),
+                    "decisions_per_episode_mean": float("nan"),
+                    "rollout_min_goal_dist_mean": float("nan"),
+                    "rollout_final_goal_dist_mean": float("nan"),
+                    "rollout_wall_hits_mean": float("nan"),
+                    "planning_success_rate_final_rel090": float("nan"),
+                }
+            else:
+                additions, stats = collect_policy_dataset(
+                    agent=agent,
+                    env_name=cfg.env,
+                    replay_observations=raw_dataset["observations"],
+                    replay_timeouts=raw_dataset["timeouts"],
+                    n_episodes=int(cfg.online_collect_episodes_per_round),
+                    episode_len=int(cfg.online_collect_episode_len),
+                    transition_budget=int(cfg.online_collect_transition_budget_per_round),
+                    decision_every_n_steps=int(cfg.online_replan_every_n_steps),
+                    goal_geom_p=float(cfg.online_goal_geom_p),
+                    goal_geom_min_k=int(cfg.online_goal_geom_min_k),
+                    goal_geom_max_k=int(cfg.online_goal_geom_max_k),
+                    goal_min_distance=float(cfg.online_goal_min_distance),
+                    seed=int(cfg.seed + 2021 + round_idx),
+                    maze_arr=maze_arr,
+                    planning_success_thresholds=online_planning_success_thresholds,
+                    planning_success_rel_reduction=float(cfg.online_planning_success_rel_reduction),
+                    early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
+                    early_terminate_threshold=float(cfg.online_early_terminate_threshold),
+                    min_accepted_episode_len=int(online_min_accepted_episode_len),
+                )
+                raw_dataset = dprobe.merge_replay_datasets(raw_dataset, additions)
+                did_collect = True
             replay_transitions = int(len(raw_dataset["observations"]))
             replay_episodes = int(dprobe.count_episodes_from_timeouts(raw_dataset["timeouts"]))
 
@@ -1309,6 +1367,7 @@ def main() -> None:
                 "phase": f"online_round_{round_idx}",
                 "replay_transitions": int(replay_transitions),
                 "replay_episodes": int(replay_episodes),
+                "did_collect": int(did_collect),
                 **{k: float(v) for k, v in stats.items()},
             }
             online_collection_rows.append(row)
@@ -1319,12 +1378,48 @@ def main() -> None:
             print(
                 "[online-replay] "
                 f"round={round_idx} replay_transitions={replay_transitions} replay_episodes={replay_episodes} "
-                f"accepted_transitions={int(stats.get('transitions', 0))} accepted_eps={int(stats.get('episodes', 0))}"
+                f"accepted_transitions={int(stats.get('transitions', 0))} accepted_eps={int(stats.get('episodes', 0))} "
+                f"did_collect={int(did_collect)}"
             )
 
             run_updates(num_steps=cfg.online_train_steps_per_round, phase=f"online_round_{round_idx}")
     else:
         print("[online] disabled or --online_rounds <= 0, skipping online rounds.")
+
+    replay_export_meta: Dict[str, Any] = {}
+    if cfg.replay_export_path:
+        export_path = Path(cfg.replay_export_path)
+        if not export_path.is_absolute():
+            export_path = logdir / export_path
+        replay_export_meta = dprobe.save_replay_artifact(
+            path=export_path,
+            dataset=raw_dataset,
+            action_low=action_low,
+            action_high=action_high,
+            collection_stats=collection_stats,
+            metadata={
+                "env_id": str(cfg.env),
+                "seed": int(cfg.seed),
+                "collector_method": f"sac_her_{cfg.reward_mode}",
+                "normalization": "raw_env_space; no replay normalization",
+                "source_replay_fingerprint": replay_import_meta.get("fingerprint", ""),
+                "collection_budget": {
+                    "offline_n_episodes": int(cfg.n_episodes),
+                    "offline_episode_len": int(cfg.episode_len),
+                    "online_rounds": int(cfg.online_rounds),
+                    "online_collect_episodes_per_round": int(cfg.online_collect_episodes_per_round),
+                    "online_collect_transition_budget_per_round": int(cfg.online_collect_transition_budget_per_round),
+                    "online_collect_episode_len": int(cfg.online_collect_episode_len),
+                },
+            },
+        )
+        print(
+            "[replay] saved_final "
+            f"path={export_path} "
+            f"transitions={int(replay_export_meta.get('transitions', len(raw_dataset['observations'])))} "
+            f"episodes={int(replay_export_meta.get('episodes', dprobe.count_episodes_from_timeouts(raw_dataset['timeouts'])))} "
+            f"fingerprint={replay_export_meta.get('fingerprint', 'na')}"
+        )
 
     metrics_df = pd.DataFrame(metrics_rows)
     metrics_df.to_csv(logdir / "metrics.csv", index=False)
@@ -1418,7 +1513,13 @@ def main() -> None:
         "train_steps_total": int(global_step),
         "online_self_improve": bool(cfg.online_self_improve),
         "online_rounds": int(cfg.online_rounds),
+        "disable_online_collection": bool(cfg.disable_online_collection),
         "online_replan_every_n_steps": int(cfg.online_replan_every_n_steps),
+        "replay_import_path": str(cfg.replay_import_path),
+        "replay_import_meta": replay_import_meta if cfg.replay_import_path else {},
+        "replay_export_path": str(cfg.replay_export_path),
+        "replay_export_meta": replay_export_meta if cfg.replay_export_path else {},
+        "replay_fingerprint": dprobe.replay_dataset_fingerprint(raw_dataset),
         "dataset_transitions": int(len(raw_dataset["observations"])),
         "dataset_episodes": int(dprobe.count_episodes_from_timeouts(raw_dataset["timeouts"])),
         "dataset_collection_stats": collection_stats,

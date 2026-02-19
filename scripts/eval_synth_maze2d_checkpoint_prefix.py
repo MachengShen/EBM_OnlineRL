@@ -95,6 +95,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num-eval-queries", type=int, default=None)
     p.add_argument("--query-batch-size", type=int, default=None, help="Imagined samples per query.")
     p.add_argument("--goal-success-threshold", type=float, default=None)
+    p.add_argument("--planning-horizon", type=int, default=None, help="Override planning horizon used during rollout planning.")
     p.add_argument("--eval-rollout-horizon", type=int, default=256)
     p.add_argument("--eval-success-prefix-horizons", type=str, default="64,128,192,256")
     p.add_argument("--eval-rollout-mode", type=str, default="receding_horizon", choices=["open_loop", "receding_horizon"])
@@ -141,6 +142,9 @@ def main() -> None:
         cfg.goal_success_threshold = float(args.goal_success_threshold)
     if args.eval_rollout_replan_every_n_steps is not None:
         cfg.eval_rollout_replan_every_n_steps = int(args.eval_rollout_replan_every_n_steps)
+    planning_horizon = int(args.planning_horizon) if args.planning_horizon is not None else int(cfg.horizon)
+    if planning_horizon <= 0:
+        raise SystemExit("--planning-horizon must be > 0")
 
     probe.set_seed(int(cfg.seed))
     print(f"[setup] device={device}", flush=True)
@@ -200,6 +204,7 @@ def main() -> None:
         "[eval] "
         f"num_queries={len(query_pairs)} "
         f"samples_per_query={int(cfg.query_batch_size)} "
+        f"planning_horizon={planning_horizon} "
         f"H_max={int(args.eval_rollout_horizon)} "
         f"prefixes={list(prefix_horizons)} "
         f"threshold={float(cfg.goal_success_threshold):.3f} "
@@ -212,8 +217,9 @@ def main() -> None:
         model=ema_model,
         dataset=dataset,
         env_name=cfg.env,
+        replay_observations=raw_dataset["observations"],
         query_pairs=query_pairs,
-        planning_horizon=int(cfg.horizon),
+        planning_horizon=planning_horizon,
         rollout_horizon=int(args.eval_rollout_horizon),
         success_prefix_horizons=prefix_horizons,
         device=device,
@@ -224,6 +230,9 @@ def main() -> None:
         maze_arr=maze_arr,
         wall_aware_planning=bool(args.wall_aware_planning),
         wall_aware_plan_samples=int(args.wall_aware_plan_samples),
+        eval_waypoint_mode="none",
+        eval_waypoint_t=0,
+        eval_waypoint_eps=float(getattr(cfg, "goal_success_threshold", 0.2)),
     )
 
     # Monotonicity sanity check: since success is defined by prefix-min distance
@@ -249,6 +258,7 @@ def main() -> None:
             "num_eval_queries": int(getattr(cfg, "num_eval_queries", 24)),
             "query_batch_size": int(getattr(cfg, "query_batch_size", 6)),
             "goal_success_threshold": float(getattr(cfg, "goal_success_threshold", 0.5)),
+            "planning_horizon": int(planning_horizon),
             "eval_rollout_horizon": int(args.eval_rollout_horizon),
             "eval_success_prefix_horizons": [int(h) for h in prefix_horizons],
             "eval_rollout_mode": str(args.eval_rollout_mode),
