@@ -1732,3 +1732,1180 @@ Key protocol knobs used in this run:
   - increase eval sample size modestly (e.g. `num_eval_queries=24`, `query_batch_size=1`) to reduce variance, or
   - keep a fixed sampled eval subset (`--no_query_resample_each_eval`) for trend tracking and run a separate periodic resampled eval for unbiased estimates.
 - If 100% success is expected on this eval distribution, likely needs either more online budget/training or a change in planning/model capacity (e.g. larger diffusion horizon / capacity), since online-goal success saturates near 1.0 while diverse-eval success remains <1.0.
+
+## 2026-02-15 23:34 CST+0800
+### User question
+- “Go to the Energy-Based Model Online RL subfolder and look at the working memory file and other Codex-related files to understand what's going on.”
+- “Grab latest messages” (Discord relay).
+
+### Evidence inspected
+- Working memory:
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+- Handoff log tail:
+  - `/root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`
+- “EBM_OnlineRL” subfolder state:
+  - `/root/ebm-online-rl-prototype/EBM_OnlineRL` (`ls -la`, `git show -1`)
+  - observed: repo exists but contains only `.git` and an empty initial commit.
+- Active code locations for Maze2D online Diffuser work:
+  - `/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py`
+  - `/root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py`
+  - `/root/ebm-online-rl-prototype/scripts/overnight_five_step_monitor_driver.sh`
+  - `/root/ebm-online-rl-prototype/scripts/eval_synth_maze2d_checkpoint_prefix.py`
+  - `/root/ebm-online-rl-prototype/docs/plans/2026-02-15-maze2d-autodecider.md`
+- Discord relay session mapping:
+  - `/root/.codex-discord-relay/sessions.json`
+- Discord latest messages fetched via Discord REST API (bot token in `/root/.codex-discord-relay.env`, proxies from `/root/.openclaw/proxy.env`):
+  - DM channel resolved/confirmed as `1472466555529859074` for user `868020619499937792`.
+
+### Conclusions
+- The investigation’s authoritative continuity artifacts are:
+  - working memory: `docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+  - handoff log: `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`
+- In this repo, `EBM_OnlineRL/` is *not* where the Maze2D Diffuser OnlineRL work lives (it’s an empty placeholder repo).
+  - The active online Diffuser + eval protocol implementation is in `scripts/synthetic_maze2d_diffuser_probe.py` and related scripts under `scripts/`.
+- Discord relay is functional; DM and relevant guild/thread contexts are reachable and messages can be fetched for monitoring.
+
+### Open items
+- None.
+
+## 2026-02-16 09:35 CST+0800
+### User question
+- “I launched an overnight experiment last night; summarize and grab the key results.”
+
+### Evidence inspected
+- Checked for new runs:
+  - `ls -lt runs/analysis/synth_maze2d_diffuser_probe`
+  - `find . -newermt '2026-02-16'`
+  - Result: no new run artifacts created after 2026-02-16 00:00; newest run dir remains:
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611`
+- Run config + summary + learning curves:
+  - `.../20260215-205611/config.json`
+  - `.../20260215-205611/summary.json`
+  - `.../20260215-205611/progress_metrics.csv`
+  - `.../20260215-205611/online_collection.csv`
+
+### Key results (run: `20260215-205611`)
+Eval protocol (stochastic, high variance):
+- Diverse eval with min start-goal distance `>= 1.0`, threshold `0.2`.
+- `num_eval_queries=8`, `samples_per_query=1`, `query_resample_each_eval=true`.
+- One rollout per query with `H=256`, receding-horizon replanning every 8 steps; report prefix `success@{64,128,192,256}`.
+
+Observed success@256 over training (denominator=8 per eval):
+- step 2000: 0.125
+- step 4000: 0.25
+- step 6000: 0.5
+- step 8000: 0.5
+- step 10000: 0.5
+- step 12000: 0.75
+- step 14000: 0.75
+- step 16000: 0.75
+- step 18000 (final): 0.625
+Best observed `success@256 = 0.75` (6/8) at steps 12000-16000; final is 0.625 (5/8).
+
+Online collection (geometric-sampled goals, threshold=0.2):
+- Planning success (distance threshold 0.2) reached ~1.0 quickly (by round 4).
+- Episodes shortened as competence improved; many segments became <64 and were rejected (Option A), increasing attempted env steps.
+- Aggregate across 8 online rounds (from `online_collection.csv`):
+  - accepted transitions added to replay: 32,533
+  - attempted transitions: 38,890 (attempted/accepted ~1.20)
+  - rejected_short episodes: 91
+
+### Conclusions
+- No new run artifacts appear after midnight 2026-02-16 in this repo; the most recent substantial experiment is `20260215-205611`.
+- That run shows meaningful improvement on the hard eval distribution, but not clear convergence to 100%: best `success@256` reached 0.75 with a noisy estimator (N=8, resampled queries).
+- The online curriculum goals become “too easy” for the planner (near-1.0 success) while diverse eval success remains <1.0, consistent with a remaining distribution-shift/generalization gap.
+
+### Open items
+- If the user truly launched a different overnight run, confirm the run path or worktree; otherwise this repo has no additional overnight results.
+
+## 2026-02-16 10:34 CST+0800
+### User question
+- “Explore all the work trees and see if there are any other results.”
+
+### Evidence inspected
+- Git worktrees for this repo:
+  - `git worktree list --porcelain` in `/root/ebm-online-rl-prototype`.
+  - Result: only the main worktree exists at `/root/ebm-online-rl-prototype`.
+- Vibe-kanban worktrees directory:
+  - `/var/tmp/vibe-kanban/worktrees/`
+  - contains 3 worktrees:
+    - `/var/tmp/vibe-kanban/worktrees/13d3-investigate-trai/EBM_OnlineRL` (contains only `figures/maze2d_plot_gallery_20260214/*`)
+    - `/var/tmp/vibe-kanban/worktrees/47cb-plz-take-a-look/EBM_OnlineRL` (empty placeholder)
+    - `/var/tmp/vibe-kanban/worktrees/946b-github-update-ca/EBM_OnlineRL` (older code snapshot; no `runs/` dir)
+- Searched for experiment artifacts outside the main repo:
+  - `find /root /var/tmp /tmp -path '*/runs/analysis/synth_maze2d_diffuser_probe/*/summary.json'`
+  - `find /root /var/tmp /tmp -name progress_metrics.csv`
+  - Result: all such artifacts are under `/root/ebm-online-rl-prototype` (plus a few smoke-test dirs under `/tmp`).
+
+### Conclusions
+- No additional training/eval result directories were found in other worktrees.
+- The only extra artifacts outside the main repo are older plot galleries under `/var/tmp/vibe-kanban/worktrees/13d3-investigate-trai/EBM_OnlineRL/figures/maze2d_plot_gallery_20260214`, which mirror plots produced from the main repo’s earlier runs.
+
+### Open items
+- If the user launched a separate “overnight” run elsewhere, we need the exact path (or run name) to summarize it; it is not discoverable via current worktree locations.
+
+## 2026-02-16 13:28 CST+0800
+### User question
+- Continue to longer training (up to 100k), propose optimization/novel metrics, and invoke autonomous 3-4h auto-decider loop.
+
+### Evidence inspected
+- 
+- 
+- 
+- 
+
+### Changes implemented
+- Added eval-time goal-coverage metrics in :
+  -  and count
+  -  and count
+  - , 
+- Updated progress logging line to print coverage at the longest prefix horizon.
+- Updated auto-decider defaults:
+  - search ladder includes longer optimization budgets up to 
+  - lighter unbiased intermediate eval (, , resampled queries)
+  - explicit hard-eval threshold 
+  - online collection defaults aligned with Option A (, early terminate on hit, min accepted len 64).
+
+### Conclusions
+- The controller can now optimize not only for success@h256 but also inspect reachable-goal expansion via coverage metrics.
+- Long-run continuation toward 100k is now part of the selectable budget ladder.
+
+### Open items
+- Launch and monitor a 3.5-hour auto-decider run; summarize mid-run findings and adapt if a config/implementation issue appears.
+
+## ${TS} (correction)
+### User question
+- Continue to longer training (up to 100k), propose optimization/novel metrics, and invoke autonomous 3-4h auto-decider loop.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py
+- /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py
+- /root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md
+- /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+
+### Changes implemented
+- Added eval-time goal-coverage metrics in evaluate_goal_progress:
+  - rollout_goal_query_coverage_rate_h{h} and rollout_goal_query_coverage_count_h{h}
+  - rollout_goal_cell_coverage_rate_h{h} and rollout_goal_cell_coverage_count_h{h}
+  - eval_unique_goal_cells and rollout_goal_cell_total
+- Updated eval progress print to include coverage at longest horizon.
+- Updated auto-decider defaults:
+  - search ladder includes longer optimization budgets up to train_steps=100000
+  - lighter unbiased intermediate eval (num_eval_queries=12, query_batch_size=1, query_resample_each_eval=true)
+  - stricter goal threshold goal_success_threshold=0.2
+  - online collection defaults aligned with Option A: transition budget 4096, early terminate on hit, min accepted len 64.
+
+### Conclusions
+- Controller now observes both success and goal-reachability expansion (coverage) during training.
+- Long-run continuation toward 100k is now in the selectable budget ladder.
+
+### Open items
+- Launch and monitor a 3.5-hour auto-decider run; summarize intermediate findings and adapt if needed.
+
+## 2026-02-16 13:29 CST+0800 (timestamped correction)
+### Note
+- Previous entry used a literal ${TS} token. This block records the same update with concrete timestamp.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py
+- /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py
+
+### Changes implemented
+- Added query-level and goal-cell-level coverage metrics at eval prefix horizons.
+- Extended auto-decider search space with a long rung up to train_steps=100000 and lighter eval defaults.
+
+## 2026-02-16 13:29 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-132936/20260216-132936_ts20_or1_ep1_t10_rp4_gp080`
+- cfg: `ts20_or1_ep1_t10_rp4_gp080`
+- objective (best succ@256): `nan`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-132936/autodecider_results.csv`
+
+## 2026-02-16 13:32 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133024/20260216-133024_ts20_or1_ep1_t10_rp4_gp080`
+- cfg: `ts20_or1_ep1_t10_rp4_gp080`
+- objective (best succ@256): `0.0000`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133024/autodecider_results.csv`
+
+## 2026-02-16 13:35 CST+0800
+### Auto-decider launch
+- Launched autonomous controller run for 3.5h.
+- tmux session: maze2d_autodecider_100k_20260216-133322
+- controller root: /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133322
+- first selected config: ts6000_or4_ep64_t3000_rp16_gp040
+
+### Initial status
+- Training reached offline_init step 500 and entered eval block.
+- GPU active; process state R indicates run is making progress.
+
+### Open items
+- Wait for first progress_metrics.csv row and verify new coverage fields are present.
+- Keep monitor-gated decisions as trials complete.
+
+## 2026-02-16 13:37 CST+0800
+### Auto-decider redesign + relaunch
+- Diagnosis: first launch spent long wallclock in the first eval block (step-500 eval with expensive planning calls), reducing trial throughput for a 3.5h budget.
+- Action: relaunched with lower eval/planning overhead while preserving receding-horizon protocol:
+  - eval_goal_every=1000
+  - eval_rollout_replan_every_n_steps=16
+  - wall_aware_plan_samples=2
+- New tmux session: maze2d_autodecider_100k_20260216-133616
+- New run root: /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616
+
+### Rationale
+- This increases completed-trial count (better for auto-decider learning) without removing key evaluation signals (success@{64,128,192,256} and goal-coverage metrics).
+
+## 2026-02-16 13:37 CST+0800
+### Coverage metric validation
+- Verified new coverage columns are emitted in progress_metrics.csv from smoke artifact:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133024/20260216-133024_ts20_or1_ep1_t10_rp4_gp080/progress_metrics.csv
+- Observed columns include:
+  - rollout_goal_query_coverage_rate_h8/h16/h32
+  - rollout_goal_cell_coverage_rate_h8/h16/h32
+  - eval_unique_goal_cells and rollout_goal_cell_total
+- This confirms metric plumbing works end-to-end before the full 3.5h run.
+
+## 2026-02-16 14:11 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/20260216-133616_ts6000_or4_ep64_t3000_rp16_gp040`
+- cfg: `ts6000_or4_ep64_t3000_rp16_gp040`
+- objective (best succ@256): `0.9167`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+## 2026-02-16 14:25 CST+0800
+### User question
+- Whether to replace fixed-space auto hyperparameter tuning with AI-agent reasoning over broader algorithm/design changes.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py (selection logic)
+- /root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md
+- /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+
+### Conclusions
+- Current decider is algorithmic (rule/bandit/promotion), not per-step LLM reasoning.
+- Replacing with an agentic meta-optimizer is feasible, but should be constrained by an edit grammar and safety/eval gates.
+- Recommended path: staged hybrid controller (LLM proposes + deterministic verifier/executor) before full open-ended code-change search.
+
+### Open items
+- Decide desired autonomy level: config-only agent, module-level edits, or broad code-level proposals with auto-merge gates.
+
+## 2026-02-16 14:32 CST+0800
+### User question
+- Start with near-open-ended autonomy experiment (beyond fixed hyperparameter space) using the proposed multi-agent architecture.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py
+- /root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md
+- /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+
+### Conclusions
+- User preference is high-autonomy exploration with high capability ceiling.
+- Next step should be a bounded near-open-ended pilot: LLM proposals over broader code/module edits, but with hard invariants and automated rollback gates.
+
+### Open items
+- Choose acceptance aggressiveness for auto-merge (single-run pass vs replicated pass).
+
+## 2026-02-16 14:46 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/20260216-141122_ts6000_or8_ep64_t3000_rp16_gp040`
+- cfg: `ts6000_or8_ep64_t3000_rp16_gp040`
+- objective (best succ@256): `0.9167`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+## 2026-02-16 15:12 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151121`
+- incumbent: `ts20_or1_ep1_t10_rp4_gp080`
+- incumbent score: `nan`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151121/agentic_results.csv`
+
+## 2026-02-16 15:13 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151311`
+- incumbent: `ts20_or1_ep1_t10_rp4_gp080`
+- incumbent score: `nan`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151311/agentic_results.csv`
+
+## 2026-02-16 15:13 CST+0800
+### User question
+- Implement conservative near-open-ended autonomous agent and prepare it to take over current auto-decider job; if successful, later make reusable skill.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py
+- /root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151311/summary.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-150616/agentic_results.csv
+
+### Changes implemented
+- Added conservative agentic controller:
+  - /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+  - Components: proposal generator, constraint checker, critic beliefs, conservative promotion (pilot + confirmation), takeover-compatible runner.
+- Added launcher:
+  - /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+- Added design doc:
+  - /root/ebm-online-rl-prototype/docs/plans/2026-02-16-agentic-near-open-ended-autodecider-design.md
+
+### Validation
+- Syntax checks passed via py_compile.
+- Smoke evidence:
+  - near-open-ended proposal stage reached (bootstrap then proposal pilot) in run .
+  - graceful completion artifact path validated in run  (, , ).
+
+### Conclusions
+- Conservative near-open-ended controller is implemented and can take over orchestration from fixed auto-decider.
+- Skillization should be done after robustness criteria in design doc are met on real-budget runs.
+
+### Open items
+- Launch a real-budget conservative agentic run and compare against baseline auto-decider on matched wall-clock budget.
+
+## CORRECTION ENTRY
+### Note
+- Previous entry at this time had shell-expanded placeholders in one validation bullet.
+
+### Corrected validation evidence
+- Proposal-stage execution observed in run:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-150616
+- Graceful completion artifacts validated in run:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151311/summary.json
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151311/agentic_results.csv
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-151311/beliefs.json
+
+## 2026-02-16 15:21 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/20260216-144628_ts6000_or4_ep64_t1000_rp4_gp120`
+- cfg: `ts6000_or4_ep64_t1000_rp4_gp120`
+- objective (best succ@256): `0.8333`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+## 2026-02-16 15:56 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/20260216-152133_ts6000_or4_ep16_t2000_rp4_gp020`
+- cfg: `ts6000_or4_ep16_t2000_rp4_gp020`
+- objective (best succ@256): `0.9167`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+## 2026-02-16 16:31 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/20260216-155639_ts12000_or24_ep16_t500_rp16_gp040`
+- cfg: `ts12000_or24_ep16_t500_rp16_gp040`
+- objective (best succ@256): `0.9167`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+## 2026-02-16 17:06 
+### Auto-decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/20260216-163144_ts48000_or24_ep64_t2000_rp4_gp040`
+- cfg: `ts48000_or24_ep64_t2000_rp4_gp040`
+- objective (best succ@256): `0.8333`
+- results table: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+## 2026-02-16 21:06 CST+0800
+### User question
+- "If you want, I can switch it over now and start the first conservative takeover run." User confirmed: "yes, plz".
+
+### Evidence inspected
+- Skill docs:
+  - /root/.codex/skills/ml-run-monitor-decider/SKILL.md
+  - /root/.codex/skills/experiment-working-memory-handoff/SKILL.md
+- Pre-launch state snapshot:
+  - GPU: `nvidia-smi` => util=0, mem=3-5 MiB
+  - tmux sessions before launch: `0`, `2`, `3`
+  - no active Maze2D autodecider/agentic processes found before launch
+- Launch command:
+  - `cd /root/ebm-online-rl-prototype && BUDGET_HOURS=6 MAX_AGENT_ROUNDS=8 PROPOSALS_PER_ROUND=4 MONITOR_EVERY_SEC=120 PER_TRIAL_TIMEOUT_MIN=35 SEED=21 scripts/launch_agentic_maze2d_autodecider_tmux.sh`
+- Post-launch evidence:
+  - new tmux session: `maze2d_agentic_20260216-210532`
+  - tmux log path: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/tmux_maze2d_agentic_20260216-210532.log`
+  - active controller PID evidence:
+    - `agentic_maze2d_autodecider.py` running
+    - child `synthetic_maze2d_diffuser_probe.py` running
+  - run root:
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532`
+  - live logs:
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic.log`
+    - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/20260216-210532_ts6000_or4_ep64_t3000_rp16_gp040/run.log`
+    - latest observed training progress: `[train] phase=offline_init step=300`.
+
+### Conclusions
+- Conservative agentic takeover is now active and running the first real-budget trial.
+- The previous fixed decider is not currently occupying GPU/process slots.
+
+### Open items
+- Continue monitor loop and report first completed trial metrics (`objective_succ_h256`, coverage metrics, online planning success) before any branch/promotion decisions.
+
+## 2026-02-16 21:07 CST+0800
+### User question
+- Confirmation/progress on conservative takeover launch.
+
+### Evidence inspected
+- `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/20260216-210532_ts6000_or4_ep64_t3000_rp16_gp040/run.log`
+- `pgrep -af 'agentic_maze2d_autodecider.py|synthetic_maze2d_diffuser_probe.py'`
+
+### Conclusions
+- Controller and child run are still alive.
+- Offline phase has advanced to step 1000 (`train_loss=0.22890`, `val_loss@1000=0.25042`), so the first trial is progressing normally.
+
+### Open items
+- Wait for first eval/online-round outputs and then compare objective metrics against incumbent baseline.
+
+## 2026-02-16 22:05 CST+0800
+### User question
+- Summarize the latest experiment results.
+
+### Evidence inspected
+- Active run/process status:
+  - `tmux ls`
+  - `pgrep -af 'agentic_maze2d_autodecider.py|synthetic_maze2d_diffuser_probe.py'`
+- Agentic takeover run artifacts:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic.log`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic_results.csv`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/20260216-210532_ts6000_or4_ep64_t3000_rp16_gp040/progress_metrics.csv`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/20260216-210532_ts6000_or4_ep64_t3000_rp16_gp040/online_collection.csv`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/20260216-214038_ts6000_or8_ep64_t3000_rp16_gp040/progress_metrics.csv`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/20260216-214038_ts6000_or8_ep64_t3000_rp16_gp040/online_collection.csv`
+- Previous fixed auto-decider table for context:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+
+### Conclusions
+- Agentic takeover is active (`maze2d_agentic_20260216-210532`) and currently running proposal pilot `ts6000_or8_ep64_t3000_rp16_gp040`.
+- First trial (bootstrap) has completed via timeout gate:
+  - run `20260216-210532_ts6000_or4_ep64_t3000_rp16_gp040`
+  - `objective_succ_h256=1.0` (best-seen snapshot), `progress_succ_h256_last=0.75`, `progress_succ_h256_max=1.0`
+  - coverage max at h256 reached query=1.0 and cell=1.0; last snapshot h256 query=0.75 cell=0.8333
+  - online collection last logged round had `planning_success_rate_final_t020=1.0` and `replay_transitions=268196`
+- Second trial (in progress, not finalized):
+  - run `20260216-214038_ts6000_or8_ep64_t3000_rp16_gp040`
+  - latest snapshot at step 9000 (`online_round_1`): h256 success=0.75, h192=0.6667, h128=0.0, h64=0.0
+  - best-so-far in this run: h256 success=0.9167, h192=0.9167
+  - latest h256 coverage: query=0.75, cell=0.875 (best-so-far query=0.9167, cell=1.0)
+  - latest online collection row (round 1): `planning_success_rate_final_t020=0.87097`, `planning_success_rate_final_rel090=0.03226`, `replay_transitions=260040`
+- Context baseline (previous fixed auto-decider run set): best `objective_succ_h256=0.9167` across several configs in `autodecider_20260216-133616`.
+
+### Open items
+- Wait for the current agentic proposal trial to finish (or timeout), then check whether promotion/confirmation is triggered and whether incumbent score remains above fixed-decider baseline.
+
+## 2026-02-16 22:18 CST+0800
+### User question
+- Summarize key hyperparameter design choices for high objective/success/sample efficiency, including effects and explanations.
+
+### Evidence inspected
+- Main sweep table:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/autodecider_20260216-133616/autodecider_results.csv`
+- Agentic takeover table/logs:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic_results.csv`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic.log`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/proposals.jsonl`
+- Per-run efficiency breakdown (online accepted/attempted transitions, short-episode rejects):
+  - `online_collection.csv` under each run in `autodecider_20260216-133616/*`
+- Horizon effect evidence from longer run:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260215-205611/progress_metrics.csv`
+- Collector behavior source (important for interpreting `ep*` hyperparameter):
+  - `/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py` (function `collect_planner_dataset`, break condition uses `transition_budget` when >0).
+
+### Conclusions
+- Best observed objective in current protocol reached with `train_steps=6000, online_rounds=4, online_train_steps_per_round=3000, online_replan_every_n_steps=16, online_goal_geom_p=0.04` (agentic bootstrap `objective_succ_h256=1.0`; fixed decider with same family reaches `0.9167`).
+- A more sample-efficient high-score setting is `ts6000_or4_ep16_t2000_rp4_gp020` (objective `0.9167`) with much lower online accepted/attempted transitions than `ep64/t3000` settings:
+  - efficient config: accepted `8175`, attempted `8998`, reject-rate `13.3%`.
+  - baseline-high config: accepted `12151`, attempted `14738`, reject-rate `23.4%`.
+- Increasing online rounds from 4 to 8 with otherwise-matched core settings did not improve objective and reduced stability in latest agentic pair; proposal was explicitly rejected (`delta=-0.0833`).
+- Very large offline train-steps before online updates (`train_steps=48000`) performed worse (`0.8333`) under current timeout budget, likely because online adaptation had little/no time to execute.
+- Geometry-goal sampling probability too high (`online_goal_geom_p=0.12`) underperformed (`0.8333`) compared with low/moderate (`0.02-0.04`) that repeatedly reached `0.9167`.
+- Success strongly depends on rollout horizon: in run `20260215-205611`, late-stage rates were `h64=0.125, h128=0.25, h192=0.625, h256=0.625`, showing short horizons materially underestimate capability in this maze.
+- Important implementation caveat: with `online_collect_transition_budget_per_round > 0` (currently 4096), collector stop condition is transition-budget-driven, so `online_collect_episodes_per_round` is effectively non-binding in current code path. Interpret `ep*` ablations accordingly.
+
+### Open items
+- Continue monitoring in-progress pilot `20260216-221544_ts6000_or4_ep32_t4000_rp16_gp040` to validate update-intensity hypothesis.
+- If strict episode-chunk ablations are desired, modify collector logic so `online_collect_episodes_per_round` remains active even when transition budget is set.
+
+## 2026-02-16 22:38 CST+0800
+### User question
+- Propose a further hypothesis-driven experiment and run it overnight via agentic autodecider without further approval.
+
+### Evidence inspected
+- Current active controller/log:
+  - `tmux session`: `maze2d_agentic_20260216-210532`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic.log`
+- Agentic proposal behavior in latest run:
+  - p0 (`or8` budget increase) was rejected (`delta=-0.0833`)
+  - p1 (`ep32,t4000`) is currently being evaluated with snapshots up to row 9 and `succ_h256_max=0.917`
+- Agentic script proposal mechanism:
+  - `/root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py`
+- Collector implementation constraint note (for interpretation):
+  - `/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py` (`collect_planner_dataset` uses transition budget as stop condition when >0).
+
+### Hypothesis and experiment design
+- Hypothesis H: Under fixed transition-budget collection, improving update-intensity/chunking is more useful for sample efficiency than simply increasing budget via more online rounds.
+- Falsification criterion:
+  - If budget-increase proposals (`or` upshift) consistently beat or match update-intensity proposals (`ep` downshift + `t` upshift) on objective and replay-cost-normalized performance, H is not supported.
+- Overnight execution plan:
+  - keep current run alive (already evaluating p1), then auto-chain a second focused overnight agentic run.
+  - second run uses `proposals-per-round=2` to emphasize p0 vs p1 (budget-up vs stronger-updates with modest chunk) and reduce random drift.
+
+### Actions taken
+- Queued follow-up overnight session that waits for current run to finish, then launches focused agentic run:
+  - queue session: `maze2d_agentic_queue_20260216-223823`
+  - queue pane evidence: `[queue] waiting for maze2d_agentic_20260216-210532 to finish`
+  - launch command (when unblocked):
+    - `agentic_maze2d_autodecider.py --budget-hours 10 --max-agent-rounds 10 --proposals-per-round 2 --monitor-every-sec 120 --per-trial-timeout-min 35 --seed 73 --accept-delta 0.01`
+
+### Open items
+- Monitor current p1 completion and first 2-3 trials of the chained run; then compare p0-vs-p1 promotion outcomes and cost-normalized objective.
+
+## 2026-02-17 03:31 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532`
+- incumbent: `ts6000_or4_ep64_t3000_rp16_gp040`
+- incumbent score: `1.0000`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic_results.csv`
+
+## 2026-02-17 05:17 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224`
+- incumbent: `ts6000_or4_ep64_t3000_rp16_gp040`
+- incumbent score: `0.9167`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic_results.csv`
+
+## 2026-02-17 14:49 CST+0800
+### User question
+- Check whether the overnight synthetic Maze2D run produced new results.
+- Provide a brief findings summary and explain how the agent made decisions.
+
+### Evidence inspected
+- Latest run root listing:
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe"
+- Overnight queued agentic run:
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/summary.json"
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic_results.csv"
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic.log"
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/proposals.jsonl"
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/beliefs.json"
+- Previous overnight reference run:
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/summary.json"
+  - "/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic_results.csv"
+- Controller logic:
+  - "/root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py"
+  - "/root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py"
+
+### Conclusions
+- New overnight results exist: run  finished at .
+- Final incumbent score in that run is  with incumbent config .
+- Two pilot proposals were tested ( budget increase and  stronger updates); both also achieved objective  (no gain over incumbent).
+- Because promotion threshold was , both pilots were rejected (), then later rounds only produced duplicate proposals and were skipped (no further exploration within this run).
+- All three executed trials ended by per-trial timeout (, ~2105 sec each), but each still produced progress/online metrics and checkpoints.
+- Compared with the prior overnight agentic run , which reported incumbent  on the same baseline config, this newest run does **not** set a new best; it indicates plateau/variance rather than improvement.
+
+### Open items
+- Improve proposal diversity after no-promotion rounds (avoid repeated duplicate heuristics).
+- Consider allowing confirmation runs only after tie-break on secondary metrics (e.g., ) when objective ties.
+- Decide whether to increase eval denominator beyond 12 queries to reduce 1/12 quantization effects.
+
+## 2026-02-17 14:50 CST+0800
+### Correction note
+- Supersedes the immediately previous malformed block (shell interpolation issue during write).
+
+### User question
+- Check whether the overnight synthetic Maze2D run produced new results.
+- Provide a brief findings summary and explain how the agent made decisions.
+
+### Evidence inspected
+- Latest run root listing:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe
+- Overnight queued agentic run:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/summary.json
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic_results.csv
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic.log
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/proposals.jsonl
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/beliefs.json
+- Previous overnight reference run:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/summary.json
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic_results.csv
+- Controller logic:
+  - /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+  - /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py
+
+### Conclusions
+- New overnight results exist: run agentic_autodecider_20260217-033224 finished at 2026-02-17 05:17:41.
+- Final incumbent score in that run is 0.9167 with incumbent config ts6000_or4_ep64_t3000_rp16_gp040.
+- Two pilot proposals were tested (or8 budget increase and ep32+t4000 stronger updates); both also achieved objective 0.9167 (no gain over incumbent).
+- Because promotion threshold was accept_delta=0.01, both pilots were rejected (delta=0.0000), then later rounds only produced duplicate proposals and were skipped.
+- All three executed trials ended by per-trial timeout (rc=-15, about 2105 sec each), but still produced progress/online metrics and checkpoints.
+- Compared with the prior overnight agentic run agentic_autodecider_20260216-210532, which reported incumbent 1.0000 on the same baseline config, this newest run does not set a new best; it indicates plateau/variance rather than improvement.
+
+### Open items
+- Improve proposal diversity after no-promotion rounds to avoid repeated duplicates.
+- Consider tie-break rules on secondary metrics when objective ties.
+- Consider increasing evaluation denominator beyond 12 queries to reduce 1/12 quantization effects.
+
+## 2026-02-17 14:55 CST+0800
+### User question
+- Why the latest synthetic Maze2D agentic run is not running.
+- What delta = 0 means.
+- Whether the current auto-decider is LLM-based vs fixed-rule.
+
+### Evidence inspected
+- Latest run artifacts:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic.log
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic_results.csv
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/summary.json
+- Launch/queue context:
+  - /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt (queued command line with proposals-per-round=2)
+  - /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+- Controller implementation:
+  - /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+  - /root/ebm-online-rl-prototype/scripts/overnight_maze2d_autodecider.py
+- Runtime process check:
+  - ps/tmux checks show no active agentic/autodecider process.
+
+### Conclusions
+- The run is not active because it already finished; there is no running process.
+- In the latest run, two pilot trials tied the incumbent objective; both had delta=0.0000 and were rejected by accept_delta=0.01.
+- After round 0, the script kept regenerating the same two proposals and skipped them as duplicates for rounds 1-9, then exited.
+- Key mechanism causing the duplicate loop in this run:
+  - proposals-per-round was set to 2 in the queued launch command.
+  - _reasoned_proposals always fills the first two slots with deterministic heuristic proposals.
+  - stochastic near-neighbor proposals are only added while len(out) < max_new, so with max_new=2 they never appear.
+- Therefore, this run did not continue exploring configs after the first two pilots.
+- The current agentic script is not LLM-reasoning-driven. Proposal generation is hard-coded heuristic + stochastic rules (no model/API call in the script).
+
+### Open items
+- Decide whether to replace proposal generation with true LLM-driven proposal synthesis (with constraint checking retained).
+- Add fallback logic to force non-duplicate candidate generation even when proposals-per-round is small.
+
+## 2026-02-17 15:04 CST+0800
+### User question
+- Do not use API calls; want the Codex agent with context to make proposals.
+- Prefer the initiating agent (launcher side) to generate proposals rather than fixed-rule auto-decider.
+
+### Evidence inspected
+- Current controller proposal path:
+  - /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+- Launcher and queue behavior:
+  - /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+  - /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+- Recent duplicate-loop evidence:
+  - /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic.log
+
+### Conclusions
+- No-API Codex-driven proposal flow is feasible if we split responsibilities:
+  - executor script runs trials + validates constraints,
+  - initiating Codex agent writes proposal files per round.
+- This keeps proposals context-aware (Codex memory + handoff + working-memory) without embedding an API client in the script.
+- The current script can be adapted to consume external proposals first, with heuristic fallback only when external proposals are absent.
+
+### Open items
+- Decide preferred control mode:
+  1) strict external proposals only (fail if missing), or
+  2) external proposals preferred with heuristic fallback.
+
+## 2026-02-17 15:22 CST+0800
+### User request
+- Implement no-API Codex-driven proposal path so launcher/initiating agent can propose runs instead of fixed-rule-only proposal generation.
+
+### What changed
+- Added external proposal mode to:
+  - /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+- Added launcher wiring/defaults to:
+  - /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+
+### New control behavior
+- : old heuristic/stochastic proposal behavior.
+- : strict external-only; writes , waits for , stops if missing/empty after timeout.
+- : same handshake, but falls back to internal proposals on missing/empty external files.
+
+### External file contract
+- Context emitted by executor each round:
+  - 
+- Proposals expected from Codex/manual writer:
+  - 
+- Proposal JSON format:
+  - list or 
+  - each proposal includes  keys:
+    - , , , , , 
+  - optional: , , , , 
+
+### Validation
+-  passed.
+-  passed.
+- venv smoke checks for external load/timeout passed using:
+  - 
+  - 
+
+### Current status
+- No active agentic run.
+- Latest known incumbent score unchanged:  from .
+
+## 2026-02-17 15:22 CST+0800
+### Correction note
+- Supersedes the immediately previous malformed block from shell interpolation.
+
+### External proposal implementation summary
+- Added strict external proposal handoff support in:
+  - /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+- Wired launcher defaults for strict external mode in:
+  - /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+
+### New runtime modes
+- proposal-source=internal: existing heuristic/stochastic proposals.
+- proposal-source=external: strict external-only mode; emits round_###_context.json and waits for round_###_proposals.json.
+- proposal-source=external_preferred: external handshake first, then falls back to internal proposals when missing/empty.
+
+### External file contract
+- Context file emitted each round:
+  - <proposal_dir>/round_###_context.json
+- Proposal file expected from Codex/manual writer:
+  - <proposal_dir>/round_###_proposals.json
+- Proposal payload:
+  - either a top-level list or a JSON object with key proposals.
+  - each proposal must include trial keys:
+    - train_steps
+    - online_rounds
+    - online_collect_episodes_per_round
+    - online_train_steps_per_round
+    - online_replan_every_n_steps
+    - online_goal_geom_p
+  - optional keys: proposal_id, rationale, origin, risk_level, common_overrides.
+
+### Validation evidence
+- python3 -m py_compile /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py (pass)
+- bash -n /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh (pass)
+- venv smoke tests for external wait/load path (success + timeout):
+  - /tmp/agentic_external_test
+  - /tmp/agentic_external_timeout_test
+
+### Current state
+- No active agentic run process.
+- Latest known incumbent score remains 0.9167 from run agentic_autodecider_20260217-033224.
+
+## 2026-02-17 15:33 CST+0800
+### User question
+- Did the overnight hypothesis experiment get the anticipated result?
+
+### Evidence inspected
+- Latest run summary/results/logs:
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/summary.json`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic_results.csv`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic.log`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/proposals.jsonl`
+- Process/GPU status:
+  - no active `agentic_maze2d_autodecider.py` or `synthetic_maze2d_diffuser_probe.py`
+
+### Conclusions
+- The anticipated result was **not clearly achieved** in the latest overnight run.
+- Hypothesis under test: stronger update-intensity/chunking should beat budget-up proposal.
+- Observed in run `agentic_autodecider_20260217-033224`:
+  - incumbent (bootstrap): objective_succ_h256=0.9167
+  - p0 budget-up (`or8`): objective_succ_h256=0.9167 (delta=0)
+  - p1 stronger-updates (`ep32,t4000`): objective_succ_h256=0.9167 (delta=0)
+  - both rejected due `accept_delta=0.01`.
+- Secondary efficiency signal favored p1 slightly on replay transitions (`264185` vs `268275`), but objective tie means no decisive win.
+- Additional reliability issue: with `proposals-per-round=2`, only deterministic p0/p1 were generated; after round 0, rounds 1-9 skipped duplicates and did no new exploration.
+
+### Open items
+- Re-run with `proposals-per-round>=3` (or external proposal mode) to avoid duplicate-only loops and get a conclusive test.
+
+## 2026-02-17 15:49 CST+0800
+### User request
+- Re-summarize the previous accomplishment with a higher-level format.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+- /root/ebm-online-rl-prototype/docs/AGENTIC_AUTODECIDER_EXTERNAL_PROPOSAL_IMPLEMENTATION.md
+- /root/SYSTEM_SETUP_WORKING_MEMORY.md
+
+### Conclusions
+- Previous accomplishment to summarize: no-API external-proposal handoff for agentic Maze2D, with launcher defaults and external round context/proposal file workflow.
+- User-facing summary format should remain abstract and operational (functions created, natural-language usage, Codex-agent usage).
+
+### Open items
+- Continue future responses in this concise high-level structure.
+
+## 2026-02-17 16:05 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-160017`
+- incumbent: `ts20_or1_ep1_t10_rp4_gp080`
+- incumbent score: `0.0000`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-160017/agentic_results.csv`
+
+## 2026-02-17 16:06 CST+0800
+### User question
+- Run a very small real training experiment to verify the external-proposal workflow functions as intended.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/tmux_maze2d_agentic_20260217-160017.log
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-160017/agentic.log
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-160017/agentic_results.csv
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-160017/summary.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/proposal_exchange_smoke_20260217-160017/round_000_context.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/proposal_exchange_smoke_20260217-160017/round_000_proposals.json
+
+### Conclusions
+- Smoke-scale real training launch succeeded in strict external mode.
+- Bootstrap run completed with rc=0 and wrote normal progress metrics.
+- External round handoff worked: context file emitted and external proposal file loaded.
+- In this smoke test, the submitted proposal duplicated the incumbent config, so it was skipped as duplicate and no promotion occurred.
+- End-to-end behavior validated: launch -> bootstrap training -> external wait -> external load -> proposal validation/skip -> summary output.
+
+### Open items
+- Optional follow-up: submit a non-duplicate smoke proposal (for example change online_replan_every_n_steps 4->8) to exercise pilot-run path in addition to handshake path.
+
+## 2026-02-17 16:07 CST+0800
+### User question
+- Whether recent conversation/experiment context across the last two days is being stored so another agent can continue reliably.
+
+### Evidence inspected
+- `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md`
+- `/root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`
+- `/var/tmp/vibe-kanban/worktrees/13d3-investigate-trai/EBM_OnlineRL/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`
+- Confirmed dated entries spanning 2026-02-16 and 2026-02-17 (agentic runs, overnight outcomes, external-proposal implementation, smoke validation).
+
+### Conclusions
+- Yes: cross-day continuity is being recorded in persistent files and is sufficient for another agent to recover context.
+- Primary source of truth is the main repo pair (working memory + handoff).
+- The 13d3 worktree handoff contains a shorter artifact-focused mirror and pointers back to main-repo paths.
+- Minor caveat: a few malformed entries occurred from shell interpolation in earlier turns, but explicit correction entries were appended afterward.
+
+### Open items
+- Continue appending every meaningful action to both main-repo continuity files; mirror critical summaries into the 13d3 handoff when interacting from this worktree.
+
+## 2026-02-17 16:31 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-162110`
+- incumbent: `ts20_or1_ep1_t10_rp4_gp080`
+- incumbent score: `0.0000`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-162110/agentic_results.csv`
+
+## 2026-02-17 16:32 CST+0800
+### User question
+- Run another very small real experiment to validate the non-duplicate external proposal pilot path.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/tmux_maze2d_agentic_20260217-162110.log
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-162110/agentic.log
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-162110/agentic_results.csv
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-162110/summary.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-162110/proposals.jsonl
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/proposal_exchange_smoke_nodup_20260217-162110/round_000_context.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/proposal_exchange_smoke_nodup_20260217-162110/round_000_proposals.json
+
+### Conclusions
+- Second smoke-scale real run completed and validated full pilot path for strict external mode.
+- Bootstrap run completed rc=0, then external context/proposal handshake completed.
+- Non-duplicate proposal was accepted into pilot execution (new trial ts20_or1_ep1_t20_rp8_gp080 ran rc=0).
+- Pilot was evaluated and rejected on objective threshold: delta=0.0000 < accept_delta=0.0200.
+- End-to-end validated path now includes: launch -> bootstrap -> external context -> external proposal load -> pilot trial -> promotion/rejection decision -> summary write.
+
+### Open items
+- Optional follow-up if needed: lower accept_delta in smoke mode to force a promotion path test, or craft a proposal likely to shift objective on this tiny setup.
+
+## 2026-02-17 16:47 CST+0800
+### User question
+- Is proposer/executor/reviewer multi-agent behavior automatically implemented in the auto-decider skill loop, or does it require launching separate Codex agents?
+
+### Evidence inspected
+- /root/.agents/skills/ebm-onlinerl-five-step-loop/SKILL.md
+- /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+- /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+
+### Conclusions
+- Current implementation is single-process executor by default; no built-in multi-agent orchestration that auto-launches proposer/reviewer Codex agents.
+- In proposal-source=external mode, executor waits for proposal files; those must be written by another process (separate Codex agent or custom helper script).
+- proposal-source=internal needs no external proposer.
+- proposal-source=external_preferred can run without external proposer (falls back to internal proposals).
+- Reviewer role is conceptual/operational and currently not auto-launched by the script/skill.
+
+### Open items
+- Optional future enhancement: add a supervisor script that launches executor + proposer sidecar + reviewer monitor automatically.
+
+## 2026-02-17 16:49 CST+0800
+### User question
+- Does internal proposal mean same Codex agent proposing, or rule-based proposing?
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py
+- /root/ebm-online-rl-prototype/scripts/launch_agentic_maze2d_autodecider_tmux.sh
+
+### Conclusions
+- internal proposal mode maps to  in the executor process.
+-  is heuristic + stochastic mutation logic (origins tagged heuristic/stochastic), not LLM/Codex reasoning.
+- To have Codex reason/propose, use external proposal mode and a separate proposal writer process (agent or script).
+
+### Open items
+- Optional: add true LLM/Codex sidecar orchestration so proposer/reviewer roles are auto-launched.
+
+## 2026-02-17 16:49 CST+0800
+### Correction note
+- Supersedes the immediately previous malformed placeholders in the internal-proposal clarification block.
+
+### Corrected conclusion
+- Internal proposal mode calls function _reasoned_proposals in the executor process.
+- That function is heuristic plus stochastic rule logic, not Codex/LLM reasoning.
+- Codex reasoning proposals require external proposal mode and a separate writer process.
+
+## 2026-02-17 17:21 
+### Agentic Decider update
+- run: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-171747`
+- incumbent: `ts20_or1_ep1_t10_rp4_gp080`
+- incumbent score: `0.0000`
+- results: `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-171747/agentic_results.csv`
+
+## 2026-02-17 17:23 CST+0800
+### User question
+- Check the most recent update of EBM_OnlineRL repo and summarize the newly added PDF report.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/EBM_OnlineRL/output/pdf/maze2d_diffuser_online_rl_status_2026-02-17.pdf
+- /root/ebm-online-rl-prototype/EBM_OnlineRL/docs/maze2d_diffuser_online_rl_status_2026-02-17.md
+- /root/ebm-online-rl-prototype/EBM_OnlineRL/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+
+### Conclusions
+- Latest EBM_OnlineRL artifact update is the 2026-02-17 status bundle (markdown + PDF mirror).
+- PDF presents algorithm definition, auto-decider mechanism, and evidence-backed findings; key result highlights include full-diverse eval mismatch diagnosis (0.0 success in earlier A/B/C full benchmark) and later h256 objective peaks up to 1.0 in lightweight diverse eval runs.
+- No code/run-state changes were made during this check; this was verification and reporting only.
+
+### Open items
+- Optional: commit docs/output in EBM_OnlineRL subrepo if this snapshot should be retained in subrepo git history.
+
+## 2026-02-17 17:46 CST+0800
+### User question
+- Implement a goal-conditioned behavior cloning baseline with HER and align essential hyperparameters to compare fairly with diffuser.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py
+- /root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt
+- /root/SYSTEM_SETUP_WORKING_MEMORY.md
+
+### Conclusions
+- Will implement a peer script that reuses the same geometric-goal sampling and eval-prefix semantics, while replacing diffuser planner/training with GCBC+HER policy training.
+- Key fairness knobs to keep aligned: online_goal_geom_p/min_k/max_k, online collection budget/round schedule, eval rollout horizon and prefix metrics, query sampling mode.
+
+### Open items
+- Decide exact HER relabeling budget per transition and policy architecture defaults.
+
+## 2026-02-17 18:00 CST+0800
+### User question
+- Implement a fair-comparison GCBC+HER baseline against current diffuser Maze2D pipeline.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py
+- /root/ebm-online-rl-prototype/scripts/synthetic_maze2d_gcbc_her_probe.py
+- /root/ebm-online-rl-prototype/scripts/launch_gcbc_her_maze2d_probe_tmux.sh
+- /tmp/gcbc_her_smoke_20260217-175852/summary.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/20260217-175920/summary.json
+
+### Conclusions
+- Added a standalone GCBC+HER training/evaluation script with shared core comparison knobs:
+  - online_goal_geom_p/min_k/max_k,
+  - online collection rounds/budgets,
+  - eval rollout horizon + prefix success metrics.
+- Added a launcher with the same MuJoCo/D4RL env exports as existing scripts so runs are reproducible in this machine setup.
+- Tiny real-run validations succeeded for both direct invocation and launcher smoke mode; artifacts were written in the same style as the diffuser probe pipeline.
+
+### Open items
+- Execute paired matched-budget experiments (diffuser vs gcbc_her) and compare objective_succ_h256 plus coverage metrics.
+
+## 2026-02-17 18:04 CST+0800
+### User question
+- Launch matched latest-setting Diffuser vs GCBC+HER runs and analyze comparative results.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/scripts/agentic_maze2d_autodecider.py (latest common defaults)
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260217-033224/agentic_results.csv
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/agentic_autodecider_20260216-210532/agentic_results.csv
+
+### Conclusions
+- Using latest stable non-smoke trial family as matched target: ts6000_or4_ep64_t3000_rp16_gp0.04 plus current common defaults.
+- Pair run root prepared: /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356 with dedicated diffuser/gcbc subdirs and pair_config.json.
+
+### Open items
+- Run diffuser first, then gcbc_her with same aligned knobs; extract side-by-side metrics from progress/summary.
+
+## 2026-02-17 18:56:07 CST+0800 Matched Pair Update (Diffuser complete, GCBC running)
+- Pair root: 
+- Diffuser completed at step 18000 (online_round_4). Final h256 metrics from :
+  - success: 
+  - query coverage: 
+  - goal-cell coverage: 
+- Diffuser final online collection (): round , replay_transitions , transitions accepted .
+- GCBC+HER matched run launched and active:
+  - run dir: 
+  - log: 
+  - status: running (first progress checkpoint pending)
+
+## CORRECTION NOTE (shell interpolation issue)
+- The immediately preceding 18:56 CST+0800 entry has missing inline path/value text because an unquoted heredoc allowed shell interpolation on backticks.
+- This correction preserves append-only policy and provides the canonical values below.
+
+## 2026-02-17 18:56:07 CST+0800 Matched Pair Update (canonical corrected)
+- Pair root: /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356
+- Diffuser completed at step 18000 (online_round_4). Final h256 metrics from summary.json -> progress_last:
+  - success: 0.8333333333333334
+  - query coverage: 0.8333333134651184
+  - goal-cell coverage: 0.8888888888888888
+- Diffuser final online collection (online_collection_last): round 4, replay_transitions 272338, transitions accepted 4057.
+- GCBC+HER matched run launched and active:
+  - run dir: /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0
+  - log: /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0/run.log
+  - status: running (first progress checkpoint pending)
+
+## 2026-02-17 20:57:12 CST+0800
+### User question
+- Continue GCBC+HER vs Diffuser comparison and summarize ready results.
+
+### Evidence inspected
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json
+- /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0_rerun_20260217-203446/summary.json
+- (partial) /root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0/progress_metrics.csv
+
+### Conclusions
+- Matched pair is now complete (both legs at train_steps_total=18000; online_round_4).
+- Diffuser outperforms GCBC+HER on the key h256 success objective in this single-seed, 12-trajectory eval:
+  - Diffuser: success@h256=0.8333 (10/12), query_coverage@h256=0.8333, goal_cell_coverage@h256=0.8889
+  - GCBC+HER: success@h256=0.5833 (7/12), query_coverage@h256=0.5833, goal_cell_coverage@h256=0.5556
+- Both used the same matched knobs (seed=0, 1000 offline episodes, online_rounds=4, train_steps=6000 + 4*3000 online, transition_budget_per_round=4096, goal_success_threshold=0.2, eval_rollout_horizon=256, diverse queries=12).
+
+### Open items
+- Repeat across multiple seeds and/or increase num_eval_queries to tighten confidence intervals.
+
+## 2026-02-17 22:18 CST+0800
+### User question
+- Implement hypothesis-driven experiments to falsify/validate a non-trivial hypothesis for the current online Diffuser approach.
+- Add a goal-conditioned RL baseline (SAC+HER) and run it with both:
+  - success/sparse reward
+  - shaped reward (noted as potentially unfair vs other approaches)
+
+### Evidence inspected
+- Matched Diffuser config (for alignment): `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/config.json`
+  - offline: `n_episodes=1000`, `episode_len=256`
+  - online: `online_rounds=4`, `online_collect_transition_budget_per_round=4096`, `online_train_steps_per_round=3000`
+  - eval: `eval_rollout_horizon=256`, `goal_success_threshold=0.2`, `query_mode=diverse`, `num_eval_queries=12`
+- Existing probes for protocol/logging patterns:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+  - `scripts/synthetic_maze2d_gcbc_her_probe.py`
+
+### Working hypothesis (falsifiable)
+- Diffuser’s edge (vs goal-conditioned baselines) is primarily from a planner-driven bootstrapping loop: early planning success yields higher-quality online replay, which then compounds.
+
+### Proposed falsification experiments (order)
+1. Implement `scripts/synthetic_maze2d_sac_her_probe.py` (SAC+HER) with aligned knobs + two reward modes (sparse success vs shaped distance).
+2. Run matched-budget comparisons (single seed first) vs existing Diffuser + GCBC+HER.
+3. Add replay export/load (NPZ) to enable data-controlled tests and collector–learner swaps:
+   - Train SAC+HER on Diffuser-collected replay (and vice versa) to see whether gains follow the collector or the learner/planner.
+
+### Open items
+- Confirm which Maze2D env to treat as primary target: `maze2d-umaze-v1` vs `maze2d-medium-v1` vs `maze2d-large-v1`.
+- Decide whether comparisons should fix eval query pairs across methods (`--no_query_resample_each_eval`) to reduce variance.
+
+## 2026-02-17 23:15:35 CST+0800
+### Action
+- User chose env option 'first one' => maze2d-umaze-v1.
+- Launched matched-budget SAC+HER (sparse/success reward) seed=0 run for side-by-side comparison with existing Diffuser + GCBC+HER pair.
+
+### Run
+- pair root: runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356
+- sac+her run dir: runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0
+- tmux session: maze2d_sac_her_20260217-231216
+- tmux log: runs/analysis/synth_maze2d_diffuser_probe/tmux_maze2d_sac_her_20260217-231216.log
+- command knobs: reward_mode=sparse batch_size=128 train_steps=6000 online_rounds=4 online_train_steps_per_round=3000
+
+### Next
+- Wait for completion, then extract progress_last h256 success + goal_cell_coverage from summary.json and decide whether to run shaped reward next.
+
+## 2026-02-18 13:50:30 CST+0800
+### Experiment: SAC+HER baseline (sparse/success reward)
+- Env: maze2d-umaze-v1 (seed=0)
+- Run dir: runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0
+- Status: complete (train_steps_total=18000, phase=online_round_4)
+
+### Key results (progress_last @h256, 12 diverse eval queries)
+- SAC+HER (sparse): success=0.8333, query_cov=0.8333, goal_cell_cov=0.7778
+- Diffuser (matched): success=0.8333, query_cov=0.8333, goal_cell_cov=0.8889
+- GCBC+HER (matched): success=0.5833, query_cov=0.5833, goal_cell_cov=0.5556
+
+### Decision
+- Proceed to SAC+HER shaped-reward run next (as an explicitly 'unfair upper bound' comparison), then revisit hypothesis-driven falsification (collector/learner swap with fixed replay).
+
+## 2026-02-18 13:53:50 CST+0800
+### Experiment: SAC+HER baseline (shaped reward; report separately as unfair upper bound)
+- Env: maze2d-umaze-v1 (seed=0)
+- Run dir: runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_shaped_ts6000_or4_ep64_t3000_rp16_gp040_seed0
+- tmux: maze2d_sac_her_20260218-135133
+- Status: running
+
+## 2026-02-18 17:13:29 CST+0800
+### Experiment: SAC+HER baseline (shaped reward; unfair upper bound)
+- Env: maze2d-umaze-v1 (seed=0)
+- Run dir: runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_shaped_ts6000_or4_ep64_t3000_rp16_gp040_seed0
+- Status: complete (train_steps_total=18000, phase=online_round_4)
+
+### Key results (progress_last @h256, 12 diverse eval queries)
+- SAC+HER (shaped): success=0.7500, query_cov=0.7500, goal_cell_cov=0.7778
+- SAC+HER (sparse): success=0.8333, query_cov=0.8333, goal_cell_cov=0.7778
+
+### Notes
+- Shaped reward did not improve success vs sparse in this single seed; treat as inconclusive due to n=12 eval trajectories.
+
+### Decision
+- Keep sparse reward as the primary fair baseline.
+- Next falsification target: implement fixed-replay / collector-learner swap to test whether performance gains follow the online data collector vs the learner/planner.
+
+## 2026-02-18 17:14:37 CST+0800
+### Hypothesis (recap; proposed 2026-02-17)
+- Diffuser’s edge (vs goal-conditioned baselines) is primarily collector-driven via a planner-driven bootstrapping loop: early planning success yields higher-quality online replay, which then compounds.
+
+### Evidence so far (maze2d-umaze-v1 seed=0, 12 diverse eval queries, h256)
+- Diffuser: success=0.8333, query_cov=0.8333, goal_cell_cov=0.8889
+- GCBC+HER: success=0.5833, query_cov=0.5833, goal_cell_cov=0.5556
+- SAC+HER (sparse): success=0.8333, query_cov=0.8333, goal_cell_cov=0.7778
+- SAC+HER (shaped): success=0.7500, query_cov=0.7500, goal_cell_cov=0.7778
+
+### Interim read
+- Diffuser’s advantage over GCBC+HER is consistent in this single seed, but Diffuser is not strictly better than SAC+HER under the same budget on the primary success metric.
+- The collector-vs-learner hypothesis is not yet directly tested; swap/fixed-replay experiments are still required.
+
+## 2026-02-18 17:49 CST+0800
+### User question
+- Record the non-trivial hypothesis proposed “yesterday” (2026-02-17).
+- Based on current experiment results, analyze:
+  1) which hypotheses have clear conclusions
+  2) which hypotheses are not supported by enough evidence
+
+### Evidence inspected
+- Working-memory recap entry (hypothesis + current numbers):
+  - `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY_DIFFUSER_MAZE2D.md` (2026-02-18 17:14 CST+0800 block)
+- Matched-budget summary.json evidence (maze2d-umaze-v1, seed=0, eval_num_queries=12):
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0_rerun_20260217-203446/summary.json`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json`
+  - `/root/ebm-online-rl-prototype/runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_shaped_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json`
+- Recent experiment timeline/decisions:
+  - `/root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`
+
+### Conclusions
+- Non-trivial hypothesis (proposed 2026-02-17; recorded in the 2026-02-18 17:14 block above):
+  - “Diffuser’s edge (vs goal-conditioned baselines) is primarily collector-driven via a planner-driven bootstrapping loop: early planning success yields higher-quality online replay, which then compounds.”
+- Clear conclusions (scoped to the *current* evidence only: maze2d-umaze-v1, seed=0, 12 eval queries, matched budget):
+  - GCBC+HER underperforms both Diffuser and SAC+HER(sparse) on success@h256:
+    - Diffuser: 10/12
+    - GCBC+HER: 7/12
+    - SAC+HER(sparse): 10/12
+  - Diffuser is not strictly better than SAC+HER(sparse) on the primary success@h256 metric in this setting (they tie at 10/12).
+  - SAC+HER(shaped) did not outperform SAC+HER(sparse) here (9/12 vs 10/12), so “shaped reward helps” is not supported by this single run.
+- Not supported by enough evidence yet (requires additional experiments / controls):
+  - The collector-vs-learner attribution in the non-trivial hypothesis above:
+    - Current results are end-to-end comparisons with different collectors and learners.
+    - Need fixed-replay / collector-learner swap to isolate the causal factor.
+  - Generalization claims (across seeds, across Maze2D medium/large, across larger eval sets than 12).
+  - The “update-intensity/chunking beats budget-up” hypothesis (see 2026-02-16 22:38 and 2026-02-17 15:33 blocks) is still inconclusive due to objective ties and the duplicate-proposal issue limiting exploration in that run.
+
+### Open items
+- Implement fixed replay export/load (NPZ) and run collector–learner swap:
+  - train SAC+HER on Diffuser-collected replay and vice versa.
+- Strengthen denominators:
+  - multiple seeds and/or larger `num_eval_queries` for tighter uncertainty on 1/12 steps.
+
+## 2026-02-18 22:31 
+### Agentic Decider update
+- run: `output/smoke/agentic_smoke_20260218-222646`
+- incumbent: `ts20_or1_ep1_t10_rp4_gp080`
+- incumbent score: `0.0000`
+- results: `output/smoke/agentic_smoke_20260218-222646/agentic_results.csv`

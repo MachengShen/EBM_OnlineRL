@@ -147,14 +147,15 @@ class SearchSpace:
 
 
 def default_search_space() -> SearchSpace:
-    # Conservative-but-wide defaults; the auto-decider will focus based on results.
+    # Wide search with explicit long-horizon continuation candidates (up to 100k
+    # optimizer steps) while still keeping shorter rungs for fast signal early.
     return SearchSpace(
-        train_steps=[1000, 2000, 3000, 4000],
-        online_rounds=[2, 4, 6, 8, 12],
+        train_steps=[6000, 12000, 24000, 48000, 100000],
+        online_rounds=[4, 8, 12, 16, 24],
         online_collect_episodes_per_round=[8, 16, 32, 64],
-        online_train_steps_per_round=[250, 500, 750, 1000, 1500, 2000, 3000],
-        online_replan_every_n_steps=[4, 8, 16],
-        online_goal_geom_p=[0.04, 0.08, 0.12],
+        online_train_steps_per_round=[500, 1000, 2000, 3000, 4000, 6000],
+        online_replan_every_n_steps=[4, 8, 12, 16],
+        online_goal_geom_p=[0.02, 0.04, 0.08, 0.12],
     )
 
 
@@ -217,6 +218,26 @@ def _summarize_progress(progress_csv: Path) -> Dict[str, Any]:
             out[f"succ_h{h}_max"] = float(df[col].dropna().max())
     if h_cols:
         out["max_prefix_horizon"] = int(h_cols[-1][0])
+    # Goal-coverage signals per prefix horizon (if available).
+    cov_query_cols: List[Tuple[int, str]] = []
+    cov_cell_cols: List[Tuple[int, str]] = []
+    for c in df.columns:
+        mq = re.match(r"^rollout_goal_query_coverage_rate_h(\d+)$", str(c))
+        if mq:
+            cov_query_cols.append((int(mq.group(1)), c))
+        mc = re.match(r"^rollout_goal_cell_coverage_rate_h(\d+)$", str(c))
+        if mc:
+            cov_cell_cols.append((int(mc.group(1)), c))
+    cov_query_cols.sort(key=lambda t: t[0])
+    cov_cell_cols.sort(key=lambda t: t[0])
+    for h, col in cov_query_cols:
+        if df[col].notna().any():
+            out[f"goal_cov_query_h{h}_last"] = float(df[col].dropna().iloc[-1])
+            out[f"goal_cov_query_h{h}_max"] = float(df[col].dropna().max())
+    for h, col in cov_cell_cols:
+        if df[col].notna().any():
+            out[f"goal_cov_cell_h{h}_last"] = float(df[col].dropna().iloc[-1])
+            out[f"goal_cov_cell_h{h}_max"] = float(df[col].dropna().max())
     if "imagined_goal_success_rate" in df.columns and df["imagined_goal_success_rate"].notna().any():
         out["imagined_succ_last"] = float(df["imagined_goal_success_rate"].dropna().iloc[-1])
         out["imagined_succ_max"] = float(df["imagined_goal_success_rate"].dropna().max())
@@ -494,12 +515,15 @@ def _run_one_trial(
             # Only log when we see a new progress row to keep logs readable.
             if pr != last_progress_rows and pr > 0:
                 last_progress_rows = pr
+                h_pref = int(ps.get("max_prefix_horizon", 256))
                 _log(
                     driver_log,
                     "snapshot "
                     f"run={run_dir.name} rows={pr} "
-                    f"succ256_last={_safe_float(ps.get('succ_h256_last', float('nan'))):.3f} "
-                    f"succ256_max={_safe_float(ps.get('succ_h256_max', float('nan'))):.3f} "
+                    f"succ_h{h_pref}_last={_safe_float(ps.get(f'succ_h{h_pref}_last', float('nan'))):.3f} "
+                    f"succ_h{h_pref}_max={_safe_float(ps.get(f'succ_h{h_pref}_max', float('nan'))):.3f} "
+                    f"cov_q_h{h_pref}_last={_safe_float(ps.get(f'goal_cov_query_h{h_pref}_last', float('nan'))):.3f} "
+                    f"cov_cell_h{h_pref}_last={_safe_float(ps.get(f'goal_cov_cell_h{h_pref}_last', float('nan'))):.3f} "
                     f"online_round={osum.get('round_last', -1)} "
                     f"replay_transitions={osum.get('replay_transitions_last', -1)}",
                 )
@@ -593,17 +617,31 @@ def main() -> int:
         "val_every": 500,
         "val_batches": 20,
         # Required for monitoring/decider loops.
-        "eval_goal_every": 500,
+        "eval_goal_every": 1000,
         "save_checkpoint_every": 5000,
         "query_mode": "diverse",
-        "num_eval_queries": 24,
-        "query_batch_size": 6,
+        # Lightweight unbiased estimator for frequent online decisions.
+        # We resample the query subset each eval and keep 1 rollout/query.
+        "num_eval_queries": 12,
+        "query_batch_size": 1,
         "query_resample_each_eval": True,
+        "query_min_distance": 1.0,
+        "goal_success_threshold": 0.2,
         "online_self_improve": True,
         "online_collect_episode_len": 256,
-        "online_goal_geom_min_k": 8,
-        "online_goal_geom_max_k": 96,
-        "online_goal_min_distance": 0.5,
+        "online_collect_transition_budget_per_round": 4096,
+        "online_goal_geom_min_k": 64,
+        "online_goal_geom_max_k": 192,
+        "online_goal_min_distance": 1.0,
+        "online_early_terminate_on_success": True,
+        "online_early_terminate_threshold": 0.2,
+        "online_min_accepted_episode_len": 64,
+        # Keep receding-horizon eval, but reduce planner-call count/cost so
+        # long autonomous loops can complete multiple trials in a fixed window.
+        "eval_rollout_replan_every_n_steps": 16,
+        "wall_aware_plan_samples": 2,
+        # Essential protocol: run one H=256 realized rollout and derive
+        # prefix success/coverage @64/128/192/256 from that same realization.
         "eval_rollout_horizon": 256,
         "eval_success_prefix_horizons": "64,128,192,256",
         "online_planning_success_thresholds": "0.1,0.2",
@@ -633,9 +671,12 @@ def main() -> int:
                 "eval_success_prefix_horizons": "8,16,32",
                 "wall_aware_plan_samples": 2,
                 "online_collect_episode_len": 32,
+                "online_collect_transition_budget_per_round": 32,
                 "online_goal_geom_min_k": 4,
                 "online_goal_geom_max_k": 16,
                 "online_goal_min_distance": 0.3,
+                "online_early_terminate_threshold": 0.1,
+                "online_min_accepted_episode_len": 8,
             }
         )
 

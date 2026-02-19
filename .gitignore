@@ -1,0 +1,24 @@
+__pycache__/
+*.pyc
+.venv/
+runs/
+
+# Experiment artifacts (never track)
+output/
+tmp/
+wandb/
+
+# Local logs / checkpoints (prefer storing under output/ or runs/)
+*.log
+*.pt
+*.pth
+*.ckpt
+
+# Nested scratch repos / copies
+EBM_OnlineRL/
+
+# Third-party dependency checkouts are large and managed out-of-band.
+third_party/
+
+# Vendored venvs (if third_party/ is unignored in the future)
+third_party/**/.venv*/

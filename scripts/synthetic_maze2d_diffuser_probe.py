@@ -54,6 +54,66 @@ def cycle(dataloader: Iterable):
             yield batch
 
 
+REPLAY_NPZ_KEYS = ("observations", "actions", "rewards", "terminals", "timeouts")
+
+
+def _episode_len_stats_from_timeouts(timeouts: np.ndarray) -> Dict[str, float]:
+    timeouts = np.asarray(timeouts).astype(bool).reshape(-1)
+    lens: List[int] = []
+    cur = 0
+    for done in timeouts:
+        cur += 1
+        if done:
+            lens.append(cur)
+            cur = 0
+    if cur > 0:
+        lens.append(cur)
+    if not lens:
+        return {"episode_len_mean": 0.0, "episode_len_min": 0, "episode_len_max": 0}
+    return {
+        "episode_len_mean": float(np.mean(lens)),
+        "episode_len_min": int(np.min(lens)),
+        "episode_len_max": int(np.max(lens)),
+    }
+
+
+def save_replay_npz(
+    path: Path,
+    dataset: Dict[str, np.ndarray],
+    action_low: np.ndarray,
+    action_high: np.ndarray,
+    collection_stats: Dict[str, float],
+) -> None:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {k: np.asarray(dataset[k]) for k in REPLAY_NPZ_KEYS}
+    payload["action_low"] = np.asarray(action_low, dtype=np.float32)
+    payload["action_high"] = np.asarray(action_high, dtype=np.float32)
+    payload["collection_stats_json"] = np.asarray(json.dumps(collection_stats), dtype=np.str_)
+    np.savez_compressed(str(path), **payload)
+
+
+def load_replay_npz(path: Path) -> Tuple[Dict[str, np.ndarray], np.ndarray, np.ndarray, Dict[str, float]]:
+    path = Path(path)
+    with np.load(str(path), allow_pickle=False) as f:
+        dataset = {k: np.asarray(f[k]) for k in REPLAY_NPZ_KEYS}
+        action_low = np.asarray(f["action_low"], dtype=np.float32) if "action_low" in f else None
+        action_high = np.asarray(f["action_high"], dtype=np.float32) if "action_high" in f else None
+        stats_json = str(f["collection_stats_json"].item()) if "collection_stats_json" in f else "{}"
+    try:
+        stats = dict(json.loads(stats_json))
+    except Exception:
+        stats = {}
+    # Ensure keys expected by downstream logging exist.
+    stats.setdefault("wall_rejects", 0)
+    stats.setdefault("failed_steps", 0)
+    if "episode_len_mean" not in stats or "episode_len_min" not in stats or "episode_len_max" not in stats:
+        stats.update(_episode_len_stats_from_timeouts(dataset["timeouts"]))
+    if action_low is None or action_high is None:
+        raise ValueError(f"Replay file missing action_low/action_high: {path}")
+    return dataset, action_low, action_high, stats
+
+
 @dataclass
 class Config:
     env: str = "maze2d-umaze-v1"
@@ -123,6 +183,23 @@ class Config:
     # Reject (discard) online-collection episodes shorter than this many steps.
     # Use 0 to default to the diffusion horizon.
     online_min_accepted_episode_len: int = 0
+
+    # Bootstrapping / ablation knobs:
+    # - collector_weights: which weights to use for online collection when no
+    #   external collector checkpoint is provided.
+    # - eval_weights: which learner weights to use for evaluation and query plots.
+    #   (Training always updates the online model; EMA is a tracking copy.)
+    collector_weights: str = "ema"  # {"ema","online"}
+    eval_weights: str = "ema"  # {"ema","online"}
+    # Optional: use a frozen collector (teacher) loaded from a checkpoint.
+    collector_ckpt_path: str = ""
+    collector_ckpt_weights: str = "ema"  # {"ema","online"} -> checkpoint key {ema,model}
+    # Optional: load/save replay snapshots for fixed-replay experiments.
+    replay_load_npz: str = ""
+    replay_save_npz: str = ""
+    # If >0: after collecting this online round, snapshot replay and freeze further appends.
+    fixed_replay_snapshot_round: int = 0
+    fixed_replay_snapshot_npz: str = ""
 
 
 class SyntheticDatasetEnv:
@@ -328,6 +405,57 @@ def parse_args() -> Config:
         type=int,
         default=Config.online_min_accepted_episode_len,
         help="Reject (discard) online-collection episodes shorter than this many steps (0 => diffusion horizon).",
+    )
+    parser.add_argument(
+        "--collector_weights",
+        type=str,
+        default=Config.collector_weights,
+        choices=["ema", "online"],
+        help="Which learner weights to use for online collection planning (when --collector_ckpt_path is not set).",
+    )
+    parser.add_argument(
+        "--eval_weights",
+        type=str,
+        default=Config.eval_weights,
+        choices=["ema", "online"],
+        help="Which learner weights to use for evaluation and query-rollout plots.",
+    )
+    parser.add_argument(
+        "--collector_ckpt_path",
+        type=str,
+        default=Config.collector_ckpt_path,
+        help="Optional: checkpoint .pt path to use as a frozen collector (teacher) for online collection.",
+    )
+    parser.add_argument(
+        "--collector_ckpt_weights",
+        type=str,
+        default=Config.collector_ckpt_weights,
+        choices=["ema", "online"],
+        help="If --collector_ckpt_path is set, which weights to load: ema or online.",
+    )
+    parser.add_argument(
+        "--replay_load_npz",
+        type=str,
+        default=Config.replay_load_npz,
+        help="Optional: load replay dataset (.npz) instead of collecting random-policy data.",
+    )
+    parser.add_argument(
+        "--replay_save_npz",
+        type=str,
+        default=Config.replay_save_npz,
+        help="Optional: save final replay dataset (.npz) at end of run.",
+    )
+    parser.add_argument(
+        "--fixed_replay_snapshot_round",
+        type=int,
+        default=Config.fixed_replay_snapshot_round,
+        help="If >0: snapshot replay after this online round and freeze further appends for remaining rounds.",
+    )
+    parser.add_argument(
+        "--fixed_replay_snapshot_npz",
+        type=str,
+        default=Config.fixed_replay_snapshot_npz,
+        help="Where to write the fixed-replay snapshot (.npz). Default: <logdir>/replay_snapshot_roundN.npz.",
     )
     parser.add_argument(
         "--clip_denoised",
@@ -548,6 +676,18 @@ def load_maze_arr_from_env(env_name: str) -> np.ndarray | None:
         return parse_maze_spec(maze_spec)
     finally:
         env.close()
+
+
+def qpos_xy_to_maze_cell(xy: np.ndarray, maze_arr: np.ndarray | None = None) -> Tuple[int, int] | None:
+    x = float(xy[0])
+    y = float(xy[1])
+    w = int(math.floor(x + 0.5))
+    h = int(math.floor(y + 0.5))
+    if maze_arr is not None:
+        width, height = maze_arr.shape
+        if w < 0 or w >= width or h < 0 or h >= height:
+            return None
+    return (w, h)
 
 
 def point_in_wall_qpos_frame(maze_arr: np.ndarray, xy: np.ndarray) -> bool:
@@ -1536,13 +1676,22 @@ def evaluate_goal_progress(
     rollout_successes_by_prefix: Dict[int, List[float]] = {int(h): [] for h in success_prefix_horizons}
     rollout_min_goal_dist_by_prefix: Dict[int, List[float]] = {int(h): [] for h in success_prefix_horizons}
     rollout_final_goal_dist_by_prefix: Dict[int, List[float]] = {int(h): [] for h in success_prefix_horizons}
+    # Goal-coverage signals:
+    # - query coverage: fraction of queried start-goal pairs with >=1 successful sample.
+    # - cell coverage: fraction of unique queried goal cells reached by >=1 sample.
+    query_success_any_by_prefix: Dict[int, np.ndarray] = {
+        int(h): np.zeros(len(query_pairs), dtype=np.bool_) for h in success_prefix_horizons
+    }
+    query_goal_cells: List[Tuple[int, int] | None] = [
+        qpos_xy_to_maze_cell(goal_xy, maze_arr=maze_arr) for _, goal_xy in query_pairs
+    ]
     imagined_wall_hits: List[int] = []
     rollout_wall_hits: List[int] = []
 
     rollout_env = gym.make(env_name)
     dt = float(getattr(rollout_env.unwrapped, "dt", 1.0))
 
-    for start_xy, goal_xy in query_pairs:
+    for qid, (start_xy, goal_xy) in enumerate(query_pairs):
         observations, actions = sample_imagined_trajectory(
             model=model,
             dataset=dataset,
@@ -1608,9 +1757,12 @@ def evaluate_goal_progress(
             )
             for h in success_prefix_horizons:
                 prefix_min_goal_dist, prefix_final_goal_dist = prefix_stats[int(h)]
-                rollout_successes_by_prefix[int(h)].append(float(prefix_min_goal_dist <= goal_success_threshold))
+                hit = bool(prefix_min_goal_dist <= goal_success_threshold)
+                rollout_successes_by_prefix[int(h)].append(float(hit))
                 rollout_min_goal_dist_by_prefix[int(h)].append(prefix_min_goal_dist)
                 rollout_final_goal_dist_by_prefix[int(h)].append(prefix_final_goal_dist)
+                if hit:
+                    query_success_any_by_prefix[int(h)][qid] = True
             del rollout_xy, rollout_actions
 
             rollout_successes.append(float(min_goal_dist <= goal_success_threshold))
@@ -1624,11 +1776,13 @@ def evaluate_goal_progress(
     eval_samples_per_query = int(n_samples)
     eval_num_trajectories = int(eval_num_queries * eval_samples_per_query)
     rollout_success_count = int(np.sum(rollout_successes)) if rollout_successes else 0
+    goal_cell_total = int(len({cell for cell in query_goal_cells if cell is not None}))
 
     metrics = {
         "eval_num_queries": eval_num_queries,
         "eval_samples_per_query": eval_samples_per_query,
         "eval_num_trajectories": eval_num_trajectories,
+        "eval_unique_goal_cells": goal_cell_total,
         "eval_rollout_mode": rollout_mode,
         "eval_rollout_replan_every_n_steps": int(rollout_replan_every_n_steps),
         "eval_rollout_horizon": int(rollout_horizon),
@@ -1657,10 +1811,27 @@ def evaluate_goal_progress(
         succ_list = rollout_successes_by_prefix[h_int]
         min_list = rollout_min_goal_dist_by_prefix[h_int]
         fin_list = rollout_final_goal_dist_by_prefix[h_int]
+        query_hits = query_success_any_by_prefix[h_int]
         metrics[f"rollout_goal_success_rate_h{h_int}"] = float(np.mean(succ_list)) if succ_list else float("nan")
         metrics[f"rollout_success_count_h{h_int}"] = int(np.sum(succ_list)) if succ_list else 0
         metrics[f"rollout_min_goal_distance_mean_h{h_int}"] = float(np.mean(min_list)) if min_list else float("nan")
         metrics[f"rollout_final_goal_error_mean_h{h_int}"] = float(np.mean(fin_list)) if fin_list else float("nan")
+        metrics[f"rollout_goal_query_coverage_rate_h{h_int}"] = (
+            float(np.mean(query_hits.astype(np.float32))) if len(query_hits) else float("nan")
+        )
+        metrics[f"rollout_goal_query_coverage_count_h{h_int}"] = int(np.sum(query_hits)) if len(query_hits) else 0
+        if goal_cell_total > 0:
+            reached_goal_cells = {
+                query_goal_cells[qidx]
+                for qidx, hit in enumerate(query_hits)
+                if bool(hit) and query_goal_cells[qidx] is not None
+            }
+            metrics[f"rollout_goal_cell_coverage_rate_h{h_int}"] = float(len(reached_goal_cells) / goal_cell_total)
+            metrics[f"rollout_goal_cell_coverage_count_h{h_int}"] = int(len(reached_goal_cells))
+        else:
+            metrics[f"rollout_goal_cell_coverage_rate_h{h_int}"] = float("nan")
+            metrics[f"rollout_goal_cell_coverage_count_h{h_int}"] = 0
+    metrics["rollout_goal_cell_total"] = int(goal_cell_total)
     return metrics
 
 
@@ -1795,6 +1966,14 @@ def plot_query_trajectories(
 def main() -> None:
     cfg = parse_args()
     set_seed(cfg.seed)
+    # Ensure prints show up promptly even when stdout/stderr are piped (e.g. via `tee`).
+    try:
+        import sys
+
+        sys.stdout.reconfigure(line_buffering=True)
+        sys.stderr.reconfigure(line_buffering=True)
+    except Exception:
+        pass
     if cfg.online_replan_every_n_steps <= 0:
         raise ValueError("--online_replan_every_n_steps must be > 0")
     if cfg.eval_rollout_replan_every_n_steps <= 0:
@@ -1848,14 +2027,35 @@ def main() -> None:
     )
     if any(thr <= 0.0 for thr in online_planning_success_thresholds):
         raise ValueError("--online_planning_success_thresholds must be > 0")
+    if cfg.fixed_replay_snapshot_round < 0:
+        raise ValueError("--fixed_replay_snapshot_round must be >= 0")
+    if cfg.replay_load_npz and not Path(cfg.replay_load_npz).is_file():
+        raise FileNotFoundError(f"--replay_load_npz not found: {cfg.replay_load_npz}")
+    if cfg.collector_ckpt_path and not Path(cfg.collector_ckpt_path).is_file():
+        raise FileNotFoundError(f"--collector_ckpt_path not found: {cfg.collector_ckpt_path}")
 
     logdir = make_logdir(cfg)
     with open(logdir / "config.json", "w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2, sort_keys=True)
 
     device = torch.device(cfg.device if torch.cuda.is_available() else "cpu")
+    print(f"[setup] env={cfg.env} seed={cfg.seed}")
     print(f"[setup] device={device}")
     print(f"[setup] logdir={logdir}")
+    print(
+        "[setup] "
+        f"collector_weights={cfg.collector_weights} "
+        f"eval_weights={cfg.eval_weights} "
+        f"collector_ckpt_path={cfg.collector_ckpt_path or 'none'} "
+        f"collector_ckpt_weights={cfg.collector_ckpt_weights}"
+    )
+    print(
+        "[setup] "
+        f"replay_load_npz={cfg.replay_load_npz or 'none'} "
+        f"replay_save_npz={cfg.replay_save_npz or 'none'} "
+        f"fixed_replay_snapshot_round={cfg.fixed_replay_snapshot_round} "
+        f"fixed_replay_snapshot_npz={cfg.fixed_replay_snapshot_npz or 'default'}"
+    )
     maze_arr = load_maze_arr_from_env(cfg.env)
     if maze_arr is None:
         print("[setup] maze geometry unavailable from environment; wall-aware planning disabled.")
@@ -1865,15 +2065,19 @@ def main() -> None:
             f"wall_cells={int(np.sum(maze_arr == 10))}"
         )
 
-    raw_dataset, action_low, action_high, collection_stats = collect_random_dataset(
-        env_name=cfg.env,
-        n_episodes=cfg.n_episodes,
-        episode_len=cfg.episode_len,
-        action_scale=cfg.action_scale,
-        seed=cfg.seed,
-        corridor_aware_data=cfg.corridor_aware_data,
-        corridor_max_resamples=cfg.corridor_max_resamples,
-    )
+    if cfg.replay_load_npz:
+        raw_dataset, action_low, action_high, collection_stats = load_replay_npz(Path(cfg.replay_load_npz))
+        print(f"[data] loaded replay_npz={cfg.replay_load_npz}")
+    else:
+        raw_dataset, action_low, action_high, collection_stats = collect_random_dataset(
+            env_name=cfg.env,
+            n_episodes=cfg.n_episodes,
+            episode_len=cfg.episode_len,
+            action_scale=cfg.action_scale,
+            seed=cfg.seed,
+            corridor_aware_data=cfg.corridor_aware_data,
+            corridor_max_resamples=cfg.corridor_max_resamples,
+        )
     print(
         f"[data] transitions={len(raw_dataset['observations'])} "
         f"episodes={count_episodes_from_timeouts(raw_dataset['timeouts'])}"
@@ -1887,6 +2091,17 @@ def main() -> None:
         f"wall_rejects={collection_stats['wall_rejects']} "
         f"failed_steps={collection_stats['failed_steps']}"
     )
+
+    if cfg.replay_load_npz:
+        # With use_padding=False, GoalDataset needs at least one episode with length > horizon,
+        # otherwise it yields zero windows and downstream training silently becomes nonsense.
+        ep_max = int(collection_stats.get("episode_len_max", 0) or 0)
+        if ep_max > 0 and int(cfg.horizon) >= ep_max:
+            raise ValueError(
+                f"--replay_load_npz {cfg.replay_load_npz} has episode_len_max={ep_max}, but --horizon={cfg.horizon}. "
+                "With use_padding=False this produces zero training windows. "
+                "Set --horizon < episode_len_max (or load a replay with longer episodes)."
+            )
 
     dataset, train_loader, val_loader, train_idx, val_idx = build_goal_dataset_splits(
         raw_dataset=raw_dataset,
@@ -1923,6 +2138,35 @@ def main() -> None:
     ema_helper = EMA(cfg.ema_decay)
     ema_model = copy.deepcopy(diffusion).to(device)
     optimizer = torch.optim.Adam(diffusion.parameters(), lr=cfg.learning_rate)
+
+    collector_ckpt_model: GaussianDiffusion | None = None
+    if cfg.collector_ckpt_path:
+        ckpt = torch.load(cfg.collector_ckpt_path, map_location=device)
+        ckpt_key = "ema" if cfg.collector_ckpt_weights == "ema" else "model"
+        if ckpt_key not in ckpt:
+            raise KeyError(
+                f"Collector checkpoint missing key '{ckpt_key}': {cfg.collector_ckpt_path} "
+                f"(keys={sorted(list(ckpt.keys()))})"
+            )
+        collector_ckpt_model = copy.deepcopy(diffusion).to(device)
+        collector_ckpt_model.load_state_dict(ckpt[ckpt_key])
+        collector_ckpt_model.eval()
+        for p in collector_ckpt_model.parameters():
+            p.requires_grad_(False)
+        print(
+            "[collector] "
+            f"mode=ckpt path={cfg.collector_ckpt_path} "
+            f"weights={cfg.collector_ckpt_weights} "
+            f"(ckpt_key={ckpt_key})"
+        )
+
+    def model_for_eval() -> GaussianDiffusion:
+        return ema_model if cfg.eval_weights == "ema" else diffusion
+
+    def model_for_collection() -> GaussianDiffusion:
+        if collector_ckpt_model is not None:
+            return collector_ckpt_model
+        return ema_model if cfg.collector_weights == "ema" else diffusion
 
     metrics_rows: List[Dict[str, float]] = []
     online_collection_rows: List[Dict[str, float]] = []
@@ -1993,7 +2237,7 @@ def main() -> None:
             val_loss = float("nan")
             if global_step == 1 or (cfg.val_every > 0 and global_step % cfg.val_every == 0):
                 val_loss = compute_val_loss(
-                    model=ema_model,
+                    model=model_for_eval(),
                     val_loader=val_loader_cur,
                     device=device,
                     n_batches=cfg.val_batches,
@@ -2033,7 +2277,7 @@ def main() -> None:
                 # shared rollout realization to avoid stochastic confounds across
                 # separate reruns at different horizons.
                 progress = evaluate_goal_progress(
-                    model=ema_model,
+                    model=model_for_eval(),
                     dataset=dataset_for_eval,
                     env_name=cfg.env,
                     query_pairs=eval_query_pairs,
@@ -2066,6 +2310,8 @@ def main() -> None:
                 rollout_short = float(progress.get(f"rollout_goal_success_rate_h{short_h}", np.nan))
                 rollout_long = float(progress.get(f"rollout_goal_success_rate_h{long_h}", np.nan))
                 rollout_long_count = int(progress.get(f"rollout_success_count_h{long_h}", 0))
+                cov_query_long = float(progress.get(f"rollout_goal_query_coverage_rate_h{long_h}", np.nan))
+                cov_cell_long = float(progress.get(f"rollout_goal_cell_coverage_rate_h{long_h}", np.nan))
                 print(
                     "[progress] "
                     f"phase={phase} step={global_step:5d} "
@@ -2073,6 +2319,8 @@ def main() -> None:
                     f"rollout_success@{short_h}={rollout_short:.3f} "
                     f"rollout_success@{long_h}={rollout_long:.3f} "
                     f"({rollout_long_count}/{int(progress['eval_num_trajectories'])}) "
+                    f"goal_cov_query@{long_h}={cov_query_long:.3f} "
+                    f"goal_cov_cell@{long_h}={cov_cell_long:.3f} "
                     f"imagined_goal_err={progress['imagined_goal_error_mean']:.3f} "
                     f"imagined_pregoal_err={progress['imagined_pregoal_error_mean']:.3f} "
                     f"rollout_goal_err={progress['rollout_final_goal_error_mean']:.3f} "
@@ -2106,34 +2354,81 @@ def main() -> None:
             f"replan_every_n_steps={cfg.online_replan_every_n_steps} "
             f"train_steps_per_round={cfg.online_train_steps_per_round}"
         )
+        replay_frozen = False
         for round_idx in range(1, cfg.online_rounds + 1):
-            planner_dataset, planner_stats = collect_planner_dataset(
-                model=ema_model,
-                dataset=current_dataset,
-                env_name=cfg.env,
-                replay_observations=raw_dataset["observations"],
-                replay_timeouts=raw_dataset["timeouts"],
-                horizon=cfg.horizon,
-                device=device,
-                n_episodes=cfg.online_collect_episodes_per_round,
-                episode_len=cfg.online_collect_episode_len,
-                transition_budget=cfg.online_collect_transition_budget_per_round,
-                replan_every_n_steps=cfg.online_replan_every_n_steps,
-                goal_geom_p=cfg.online_goal_geom_p,
-                goal_geom_min_k=cfg.online_goal_geom_min_k,
-                goal_geom_max_k=cfg.online_goal_geom_max_k,
-                goal_min_distance=cfg.online_goal_min_distance,
-                seed=cfg.seed + 10000 + round_idx,
-                maze_arr=maze_arr,
-                wall_aware_planning=cfg.wall_aware_planning,
-                wall_aware_plan_samples=cfg.wall_aware_plan_samples,
-                planning_success_thresholds=online_planning_success_thresholds,
-                planning_success_rel_reduction=cfg.online_planning_success_rel_reduction,
-                early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
-                early_terminate_threshold=float(cfg.online_early_terminate_threshold),
-                min_accepted_episode_len=int(online_min_accepted_episode_len),
-            )
-            raw_dataset = merge_replay_datasets(raw_dataset, planner_dataset)
+            did_collect = False
+            if not replay_frozen:
+                planner_dataset, planner_stats = collect_planner_dataset(
+                    model=model_for_collection(),
+                    dataset=current_dataset,
+                    env_name=cfg.env,
+                    replay_observations=raw_dataset["observations"],
+                    replay_timeouts=raw_dataset["timeouts"],
+                    horizon=cfg.horizon,
+                    device=device,
+                    n_episodes=cfg.online_collect_episodes_per_round,
+                    episode_len=cfg.online_collect_episode_len,
+                    transition_budget=cfg.online_collect_transition_budget_per_round,
+                    replan_every_n_steps=cfg.online_replan_every_n_steps,
+                    goal_geom_p=cfg.online_goal_geom_p,
+                    goal_geom_min_k=cfg.online_goal_geom_min_k,
+                    goal_geom_max_k=cfg.online_goal_geom_max_k,
+                    goal_min_distance=cfg.online_goal_min_distance,
+                    seed=cfg.seed + 10000 + round_idx,
+                    maze_arr=maze_arr,
+                    wall_aware_planning=cfg.wall_aware_planning,
+                    wall_aware_plan_samples=cfg.wall_aware_plan_samples,
+                    planning_success_thresholds=online_planning_success_thresholds,
+                    planning_success_rel_reduction=cfg.online_planning_success_rel_reduction,
+                    early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
+                    early_terminate_threshold=float(cfg.online_early_terminate_threshold),
+                    min_accepted_episode_len=int(online_min_accepted_episode_len),
+                )
+                did_collect = True
+                raw_dataset = merge_replay_datasets(raw_dataset, planner_dataset)
+
+                if cfg.fixed_replay_snapshot_round > 0 and round_idx == cfg.fixed_replay_snapshot_round:
+                    if cfg.fixed_replay_snapshot_npz:
+                        snap_path = Path(cfg.fixed_replay_snapshot_npz)
+                        if not snap_path.is_absolute():
+                            # Interpret relative paths as relative to logdir, unless the user already
+                            # included logdir in the provided relative path (common CLI mistake).
+                            logdir_parts = tuple(logdir.parts)
+                            snap_parts = tuple(snap_path.parts)
+                            if logdir_parts and snap_parts[: len(logdir_parts)] == logdir_parts:
+                                snap_path = Path(str(snap_path))
+                            else:
+                                snap_path = logdir / snap_path
+                    else:
+                        snap_path = logdir / f"replay_snapshot_round{round_idx}.npz"
+                    save_replay_npz(
+                        path=snap_path,
+                        dataset=raw_dataset,
+                        action_low=action_low,
+                        action_high=action_high,
+                        collection_stats=collection_stats,
+                    )
+                    print(f"[replay] snapshot_saved round={round_idx} path={snap_path}")
+                    replay_frozen = True
+            else:
+                # Fixed-replay mode after snapshot: keep training on the same replay without adding new data.
+                planner_stats = {
+                    "episodes": 0,
+                    "episodes_attempted": 0,
+                    "episodes_rejected_short": 0,
+                    "episode_len_mean": float("nan"),
+                    "episode_len_min": float("nan"),
+                    "episode_len_max": float("nan"),
+                    "transitions": 0,
+                    "transitions_attempted": 0,
+                    "replans_per_episode_mean": float("nan"),
+                    "selected_plan_wall_hits_mean": float("nan"),
+                    "rollout_wall_hits_mean": float("nan"),
+                    "sampled_goal_distance_mean": float("nan"),
+                    "sampled_goal_k_mean": float("nan"),
+                }
+                print(f"[online-collect] round={round_idx} replay_frozen=1 (skipping collection)")
+
             replay_transitions = int(len(raw_dataset["observations"]))
             replay_episodes = count_episodes_from_timeouts(raw_dataset["timeouts"])
             round_row = {
@@ -2141,6 +2436,8 @@ def main() -> None:
                 "step_before_retrain": int(global_step),
                 "replay_transitions": replay_transitions,
                 "replay_episodes": int(replay_episodes),
+                "did_collect": int(did_collect),
+                "replay_frozen": int(replay_frozen),
                 **planner_stats,
             }
             online_collection_rows.append(round_row)
@@ -2174,17 +2471,24 @@ def main() -> None:
                 f"{threshold_summaries}"
             )
 
-            current_dataset, train_loader, val_loader, train_idx, val_idx = build_goal_dataset_splits(
-                raw_dataset=raw_dataset,
-                cfg=cfg,
-                split_seed=cfg.seed + 1337 + round_idx,
-                device=device,
-            )
-            print(
-                "[online-replay] "
-                f"round={round_idx} samples total={len(current_dataset)} "
-                f"train={len(train_idx)} val={len(val_idx)}"
-            )
+            if did_collect:
+                current_dataset, train_loader, val_loader, train_idx, val_idx = build_goal_dataset_splits(
+                    raw_dataset=raw_dataset,
+                    cfg=cfg,
+                    split_seed=cfg.seed + 1337 + round_idx,
+                    device=device,
+                )
+                print(
+                    "[online-replay] "
+                    f"round={round_idx} samples total={len(current_dataset)} "
+                    f"train={len(train_idx)} val={len(val_idx)}"
+                )
+            else:
+                print(
+                    "[online-replay] "
+                    f"round={round_idx} replay_frozen=1 samples total={len(current_dataset)} "
+                    f"train={len(train_idx)} val={len(val_idx)}"
+                )
 
             run_training_steps(
                 num_steps=cfg.online_train_steps_per_round,
@@ -2195,6 +2499,19 @@ def main() -> None:
             )
     elif cfg.online_self_improve:
         print("[online] enabled but --online_rounds <= 0, skipping replay expansion rounds.")
+
+    if cfg.replay_save_npz:
+        save_path = Path(cfg.replay_save_npz)
+        if not save_path.is_absolute():
+            save_path = logdir / save_path
+        save_replay_npz(
+            path=save_path,
+            dataset=raw_dataset,
+            action_low=action_low,
+            action_high=action_high,
+            collection_stats=collection_stats,
+        )
+        print(f"[replay] saved_final path={save_path}")
 
     metrics_df = pd.DataFrame(metrics_rows)
     metrics_df.to_csv(logdir / "metrics.csv", index=False)
@@ -2220,7 +2537,7 @@ def main() -> None:
     query_rollout_env = gym.make(cfg.env)
     for qid, (start_xy, goal_xy) in enumerate(final_query_pairs):
         observations, actions = sample_imagined_trajectory(
-            model=ema_model,
+            model=model_for_eval(),
             dataset=current_dataset,
             start_xy=start_xy,
             goal_xy=goal_xy,
@@ -2235,7 +2552,7 @@ def main() -> None:
             b = boundary_jump_ratios(xy)
             imagined_wall_hits = count_wall_hits_qpos_frame(maze_arr, xy)
             rollout_xy, rollout_actions, rollout_min_goal_dist, rollout_final_goal_dist, rollout_wall_hits = rollout_to_goal(
-                model=ema_model,
+                model=model_for_eval(),
                 dataset=current_dataset,
                 rollout_env=query_rollout_env,
                 start_xy=start_xy,
@@ -2293,6 +2610,14 @@ def main() -> None:
         "online_self_improve": bool(cfg.online_self_improve),
         "online_rounds": int(cfg.online_rounds),
         "online_replan_every_n_steps": int(cfg.online_replan_every_n_steps),
+        "collector_weights": str(cfg.collector_weights),
+        "eval_weights": str(cfg.eval_weights),
+        "collector_ckpt_path": str(cfg.collector_ckpt_path),
+        "collector_ckpt_weights": str(cfg.collector_ckpt_weights),
+        "replay_load_npz": str(cfg.replay_load_npz),
+        "replay_save_npz": str(cfg.replay_save_npz),
+        "fixed_replay_snapshot_round": int(cfg.fixed_replay_snapshot_round),
+        "fixed_replay_snapshot_npz": str(cfg.fixed_replay_snapshot_npz),
         "dataset_transitions": int(len(raw_dataset["observations"])),
         "dataset_episodes": int(count_episodes_from_timeouts(raw_dataset["timeouts"])),
         "dataset_collection_stats": collection_stats,

@@ -1,0 +1,7 @@
+# NOTE:
+# - This file only captures the minimal deps for the point-mass prototype in `scripts/online_pointmass_goal_diffuser.py`.
+# - Maze2D online Diffuser runs currently use the pinned environment under `third_party/diffuser/.venv38`
+#   (plus MuJoCo/D4RL); see `README.md` for the exact invocation/env vars.
+numpy>=1.24
+torch>=2.2
+matplotlib>=3.7
