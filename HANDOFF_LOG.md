@@ -87,3 +87,15 @@
 - **Next step**:
   - User provides remote URL/name; then run `git remote add <name> <url>` (if needed) and `git push <name> master`.
   - Continue with multi-seed fixed-replay/collector-swap ablations for causal attribution.
+
+## 2026-02-19 14:45 CST+0800
+- **Changed**:
+  - Configured remote `origin` as `https://github.com/MachengShen/EBM_OnlineRL.git`.
+  - Pushed local `master` to remote `main` using `--force-with-lease` due unrelated remote history and merge blockage from untracked `third_party/diffuser/*` files.
+  - Created concise handoff text artifact for GPT Pro.
+- **Evidence**:
+  - Push success: `git push -u origin master:main --force-with-lease` -> `d0db5b7...b3c0b6f`.
+  - Handoff file:
+    - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/ebm_onlinerl_brief_handoff_2026-02-19.txt`
+- **Next step**:
+  - Run and summarize multi-seed fixed-replay / collector-learner swap ablations.
