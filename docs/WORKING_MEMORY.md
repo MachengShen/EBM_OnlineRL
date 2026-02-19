@@ -174,3 +174,37 @@ Entries here are append-only and focus on the bootstrapping ablation plan execut
 - Bootstrapping ablation matrix execution is still incomplete:
   - smoke baselines/variants ran and tooling issues were fixed
   - multi-seed + teacher-collector matrix remains pending.
+
+## 2026-02-19 14:31 CST+0800
+### User question / goal
+- Push the latest local code to remote.
+- Provide a brief, handoff-ready summary of experiments run so far, results, and latest algorithm understanding for GPT Pro continuation.
+
+### Evidence inspected
+- Git state:
+  - `git status --short --branch` -> `## master` (clean)
+  - `git log --oneline -n 8` -> HEAD `8f8d425 Add Maze2D agentic workflow, probes, docs, and reproducibility fixes`
+  - `.git/config` and `git remote -v` -> no remotes configured (push destination missing)
+- Main longer diffuser run:
+  - `runs/analysis/synth_maze2d_diffuser_probe/20260215-205611/summary.json`
+  - `progress_last.rollout_goal_success_rate_h256 = 0.625` at step 18000; peak around 0.75 earlier in run.
+- Matched method comparison (maze2d-umaze-v1, seed=0, 12 diverse eval queries, h256):
+  - `.../compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json` -> success@h256=0.8333
+  - `.../gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0_rerun_20260217-203446/summary.json` -> success@h256=0.5833
+  - `.../sac_her_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json` -> success@h256=0.8333
+  - `.../sac_her_shaped_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json` -> success@h256=0.7500
+- Bootstrapping smoke matrix:
+  - `output/bootstrapping/2026-02-18_bootstrap/maze2d/*/seed_*/summary.json`
+  - All smoke variants currently show rollout success near 0 at h64 in these tiny-budget checks; these runs validate pipeline mechanics rather than final performance ranking.
+
+### Conclusions
+- Push is currently blocked only by missing remote configuration; local branch is clean and committed at `8f8d425`.
+- Current best concise method comparison (single seed) is:
+  - Diffuser ~= SAC+HER sparse on success@h256 (both 0.8333)
+  - Diffuser > GCBC+HER (0.8333 vs 0.5833)
+  - SAC+HER shaped did not beat sparse in this run (0.7500 vs 0.8333)
+- Latest understanding remains: there is signal that diffuser planning helps, but collector-vs-learner causality is still unproven; fixed-replay / collector-swap ablations are the key unresolved test.
+
+### Open items
+- Configure a git remote (name + URL) to complete push.
+- Run multi-seed fixed-replay / collector-learner swap ablations to directly test the bootstrapping hypothesis.

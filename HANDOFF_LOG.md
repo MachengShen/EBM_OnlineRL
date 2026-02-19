@@ -70,3 +70,20 @@
   - Repo has no configured remote (`git remote -v` empty), so push cannot proceed until remote URL is provided.
 - **Next step**:
   - Configure `origin`, push current branch, then hand GPT Pro this repo + concise experiment summary from the working-memory block above.
+
+## 2026-02-19 14:31 CST+0800
+- **Changed**:
+  - Collected a GPT-Pro handoff-ready brief from current experiment artifacts and git state.
+  - Verified local HEAD and push readiness; identified push blocker.
+- **Evidence**:
+  - Git: `git status --short --branch` (clean `master`), HEAD `8f8d425`, `.git/config` has no remote.
+  - Comparison summaries:
+    - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json`
+    - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json`
+    - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/sac_her_shaped_ts6000_or4_ep64_t3000_rp16_gp040_seed0/summary.json`
+    - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/gcbc_her_ts6000_or4_ep64_t3000_rp16_gp040_seed0_rerun_20260217-203446/summary.json`
+  - Bootstrapping smoke summaries:
+    - `output/bootstrapping/2026-02-18_bootstrap/maze2d/*/seed_*/summary.json`
+- **Next step**:
+  - User provides remote URL/name; then run `git remote add <name> <url>` (if needed) and `git push <name> master`.
+  - Continue with multi-seed fixed-replay/collector-swap ablations for causal attribution.
