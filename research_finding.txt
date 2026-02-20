@@ -1,0 +1,122 @@
+Research Finding Note
+Date: 2026-02-20
+Project: /root/ebm-online-rl-prototype
+
+1) Specific point (for paper drafting)
+- In the current Maze2D swap-matrix evidence, SAC's exploration advantage over diffuser is not explained by larger raw action noise.
+- Evidence supports a control-aware exploration mechanism: SAC converts exploration into goal progress/coverage more effectively, while diffuser shows higher action stochasticity but weaker effective controllability.
+- Key observed contrast from phase1 matched-query aggregate (n=36/method):
+  - Diffuser: success 0.7222, min-goal-distance 0.4718
+  - SAC:      success 0.8333, min-goal-distance 0.3013
+  - Delta (SAC - Diffuser): success +0.1111, min-goal-distance -0.1704
+
+2) Specific scripts and artifacts
+- Scripts:
+  - scripts/exp_swap_matrix_maze2d.py
+  - scripts/analyze_collector_stochasticity.py
+  - scripts/synthetic_maze2d_diffuser_probe.py
+  - scripts/synthetic_maze2d_sac_her_probe.py
+- Primary artifacts used for this finding:
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/swap_matrix_results.csv
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/diffuser/seed_0/query_metrics.csv
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/diffuser/seed_1/query_metrics.csv
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/diffuser/seed_2/query_metrics.csv
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/sac_her_sparse/seed_0/query_metrics.csv
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/sac_her_sparse/seed_1/query_metrics.csv
+  - runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/sac_her_sparse/seed_2/query_metrics.csv
+  - runs/analysis/collector_stochasticity/phase1_seed0_pilot_q10_s40_r8_h192/collector_stochasticity_summary.json
+  - runs/analysis/collector_stochasticity/warmstart_diffreplay_seed0_pilot_q10_s40_r8_h192/collector_stochasticity_summary.json
+  - runs/analysis/collector_stochasticity/frozen_diffreplay_seed0_pilot_q10_s40_r8_h192/collector_stochasticity_summary.json
+  - runs/analysis/collector_stochasticity/warmstart_sacreplay_seed0_pilot_q10_s40_r8_h192/collector_stochasticity_summary.json
+
+3) Git commit version
+- Repository HEAD (analysis context):
+  - b9cdd15
+  - 2026-02-19 23:14:32 +0800
+  - fix: exp_swap_matrix episode_len 64->256; add causal ablation scripts
+- Note: current workspace also contains uncommitted tracking/docs changes after this commit.
+
+4) Mechanism clarification (causal claim to verify)
+- Important clarification:
+  - We do NOT claim "value learning directly causes endpoint diversity."
+  - The more defensible chain is:
+    1) value/Q learning improves action quality toward goal progress
+    2) entropy/stochastic sampling occurs around high-value actions
+    3) closed-loop correction keeps trajectories feasible
+    4) this can produce broader endpoint spread with equal-or-better success
+- Therefore, the conjecture is:
+  - SAC's advantage comes from control-aware branching (quality-weighted stochasticity),
+    not from larger raw action noise magnitude.
+
+5) Direct visual falsification check (same start-goal pairs)
+- Rationale:
+  - Use identical start-goal queries for both collectors and compare sampled rollout geometry directly.
+  - If diffuser truly has weaker control/trajectory effectiveness, this should appear visually as less useful branching and/or less goal-directed rollouts despite higher action noise.
+- Script support (added):
+  - `scripts/analyze_collector_stochasticity.py` now supports:
+    - `--save-trajectory-plots`
+    - `--plot-rollouts-per-query`
+    - `--plot-max-queries`
+- Executed visual check:
+  - Diffuser run:
+    - `runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/diffuser/seed_0`
+  - SAC run:
+    - `runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/sac_her_sparse/seed_0`
+  - Output:
+    - `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/`
+  - Key files:
+    - `collector_stochasticity_summary.json`
+    - `trajectory_plots/trajectory_overlay_grid.png`
+    - `trajectory_plots/query_00_sac_vs_diffuser.png` ... `query_05_sac_vs_diffuser.png`
+- Quick aggregate from this visual run:
+  - action_pairwise_l2: Diffuser 0.7517 vs SAC 0.3269
+  - endpoint_pairwise_l2: Diffuser 0.3322 vs SAC 0.3629
+  - rollout_success_rate: Diffuser 0.5556 vs SAC 0.6389
+- Additional direct metric (requested): steps-to-first-hit at goal distance `<=0.1`
+  - computed from saved per-query trajectory rollouts (`query_0*_trajectories.npz`)
+  - outputs:
+    - `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/steps_to_goal_threshold_0p1.json`
+    - `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/steps_to_goal_threshold_0p1_summary.json`
+  - aggregate (queries where both methods reached `<=0.1`):
+    - best-hit step delta (Diffuser - SAC): mean `+61.25`, median `+59.0` (SAC faster in `4/4`)
+    - mean-hit step delta (Diffuser - SAC): mean `+35.55`, median `+31.33` (SAC faster in `4/4`)
+  - per-query min-hit steps (Diffuser vs SAC):
+    - q00: `131` vs `84`
+    - q01: `None` vs `None`
+    - q02: `None` vs `None`
+    - q03: `159` vs `76`
+    - q04: `126` vs `82`
+    - q05: `152` vs `81`
+- Interpretation status:
+  - Consistent with (not definitive proof of) the control-aware hypothesis.
+
+6) Conservative-action root cause check (query 0)
+- User question:
+  - Is Diffuser's smaller per-step displacement caused by manual clipping artifacts?
+- Code-path check:
+  - Both methods clip before stepping env in the stochastic analyzer:
+    - Diffuser: `scripts/analyze_collector_stochasticity.py` (`action = np.clip(...)`)
+    - SAC: `scripts/analyze_collector_stochasticity.py` (`action = np.clip(...)`)
+  - SAC actor is already bounded by design (`tanh` squashing to action bounds):
+    - `scripts/synthetic_maze2d_sac_her_probe.py` (ActorPolicy `sample`)
+  - Diffuser denoising uses normalized-space clamp when `clip_denoised=True`:
+    - `third_party/diffuser-maze2d/diffuser/models/diffusion.py`
+- New artifacts:
+  - `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/query_00_action_magnitude_audit.json`
+  - `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/query_00_sac_cadence_sensitivity.json`
+  - `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/collector_replay_action_norm_stats_seed0.json`
+- Key readout:
+  - Query-0 t0 action samples (`n=20`) clip rate:
+    - Diffuser `0.000`, SAC `0.000`
+  - Query-0 rollout clip fraction (`6 x 192`):
+    - Diffuser `0.0165`, SAC `0.0000`
+  - Query-0 rollout raw action L2 mean:
+    - Diffuser `0.7726`, SAC `1.2191`
+  - Replay action L2 means (seed0 exports):
+    - Diffuser `0.7512`, SAC `0.8451`, uniform `[-1,1]^2` reference `0.7653`
+  - SAC cadence sensitivity (same query):
+    - `decision_every=1`: hit-step mean `100.5` (`6/6`), displacement mean `0.0118`
+    - `decision_every=16`: hit-step mean `111.4` (`5/6`), displacement mean `0.0240`
+- Interpretation:
+  - Diffuser's conservative magnitude is not primarily a clipping bug/artifact.
+  - It is more consistent with method-level behavior (planner objective + denoising policy + control cadence effects).

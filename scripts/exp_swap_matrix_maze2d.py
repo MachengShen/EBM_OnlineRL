@@ -311,6 +311,9 @@ def main() -> int:
         "goal_success_threshold": 0.2,
         "eval_rollout_horizon": 32 if args.smoke else 256,
         "eval_rollout_replan_every_n_steps": 4 if args.smoke else 16,
+        # Avoid privileged maze-layout-aware candidate selection in default comparisons.
+        "wall_aware_planning": False,
+        "wall_aware_plan_samples": 1,
         "eval_success_prefix_horizons": ",".join(str(x) for x in prefixes),
         "save_checkpoint_every": 0 if args.smoke else 5000,
     }

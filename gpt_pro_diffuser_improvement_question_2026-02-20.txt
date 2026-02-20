@@ -1,0 +1,96 @@
+GPT Pro Handoff Question: Simple, Effective Ways to Improve Diffuser Collector Performance
+Date: 2026-02-20
+Bundle root (inside extracted zip): .
+Path convention in this file: all paths are relative to bundle root and start with `repo/`.
+
+Goal
+- We want practical, low-complexity modifications that help the Diffuser collector catch up to (or beat) SAC collector performance in Maze2D online RL.
+- We specifically care about control/trajectory effectiveness, not just increasing random action noise.
+
+Current setup summary
+- Environment family: Maze2D (mainly maze2d-umaze-v1)
+- Main matrix artifact:
+  - repo/runs/analysis/swap_matrix/swap_matrix_20260219-231605/swap_matrix_results.csv
+- Completed 3-seed swap matrix shows at h256 (learning rows main effects):
+  - collector main effect: SAC replay 0.9097 vs Diffuser replay 0.8194
+  - learner main effect: Diffuser learner 0.8819 vs SAC learner 0.8472
+- Current interpretation:
+  - Diffuser collector is weaker than SAC collector in this setting
+  - Diffuser learner/planner can still be strong with SAC replay
+
+Key validated findings we need you to use
+1) Not a raw-noise explanation
+- Multi-seed stochasticity consolidation (4 contexts x 3 seeds):
+  - Diffuser action pairwise L2 > SAC in 11/12 cells
+  - SAC endpoint pairwise L2 > Diffuser in 11/12 cells
+  - SAC rollout success > Diffuser in 7/12 cells
+- Artifact:
+  - repo/runs/analysis/collector_stochasticity/consolidation_q10_s40_r8_h192/consolidated_overall_summary.json
+
+2) Visual-vs-numeric mismatch was investigated and implementation checked
+- Query-0 looked geometrically cleaner for Diffuser in some overlays, but SAC often reached <=0.1 threshold earlier.
+- We verified first-hit metric implementation from saved trajectories.
+- Artifacts:
+  - repo/runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/trajectory_plots/query_00_trajectories.npz
+  - repo/runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/steps_to_goal_threshold_0p1_summary.json
+  - repo/runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/trajectory_plots/query_00_first_hit_diagnostics.png
+
+3) Conservative Diffuser magnitude is not mainly a clipping artifact
+- Query-0 action audit:
+  - t0 clip rate: Diffuser 0.000, SAC 0.000
+  - rollout clip fraction: Diffuser 0.0165, SAC 0.0000
+  - rollout raw action L2 mean: Diffuser 0.7726, SAC 1.2191
+- Replay action norm context (seed0 exports):
+  - Diffuser replay L2 mean 0.7512
+  - SAC replay L2 mean 0.8451
+- Artifacts:
+  - repo/runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/query_00_action_magnitude_audit.json
+  - repo/runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/collector_replay_action_norm_stats_seed0.json
+
+4) Important fairness/semantics clarification
+- Diffuser does NOT do post-hoc selection across multiple executed environment rollouts.
+- It can sample multiple imagined plans per replan step and choose one (MPC-style), depending on settings.
+- In the stochasticity analyzer script used for visual checks, planner is called with maze_arr=None, making effective candidate count 1 there.
+- Relevant code paths:
+  - repo/scripts/synthetic_maze2d_diffuser_probe.py (sample_best_plan_from_obs, rollout_to_goal)
+  - repo/scripts/analyze_collector_stochasticity.py (maze_arr=None in diffuser rollout helper)
+
+What we want from you
+Please propose simple, high-leverage ideas to improve Diffuser collector trajectory effectiveness under realistic single-rollout execution constraints.
+
+Please prioritize ideas that are:
+- Minimal code changes
+- Low training overhead
+- Easy to test with short ablations
+- Likely to improve endpoint diversity + success together
+
+Specific request
+- Provide 8-12 candidate interventions, ranked by expected impact/effort.
+- For each intervention include:
+  1) One-sentence mechanism intuition
+  2) Exact place to implement (module/function-level suggestion)
+  3) Minimal ablation design (what to vary, baseline, metrics)
+  4) Expected positive signal and failure mode
+  5) Estimated engineering cost (S/M/L)
+
+Please also include
+- A "Top-3 to run this week" shortlist with rationale.
+- A fairness checklist so SAC vs Diffuser comparison stays valid (especially around planning-time candidate selection, decision cadence, and eval semantics).
+- A short recommendation on whether we should disable wall-aware multi-candidate plan selection in main comparisons, or keep it as part of method capability and instead match compute budget.
+
+Current open follow-ups already planned
+- Replanning cadence/horizon ablations
+- eval_samples_per_query > 1 checks
+- 5-seed swap matrix expansion
+
+If useful, assume we can edit:
+- repo/scripts/synthetic_maze2d_diffuser_probe.py
+- repo/scripts/analyze_collector_stochasticity.py
+- repo/scripts/exp_replan_horizon_sweep.py
+- repo/scripts/exp_swap_matrix_maze2d.py
+
+Desired output format from GPT Pro
+- Section A: Ranked interventions table (impact/effort)
+- Section B: Top-3 execution plan (week-1)
+- Section C: Ablation matrix (minimal but decisive)
+- Section D: Risk/fairness checklist

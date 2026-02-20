@@ -226,8 +226,9 @@ class Config:
     eval_waypoint_mode: str = "none"  # {"none","feasible","infeasible"}
     eval_waypoint_t: int = 0  # 0 => horizon//2
     eval_waypoint_eps: float = 0.2
-    wall_aware_planning: bool = True
-    wall_aware_plan_samples: int = 8
+    # Non-privileged default: do not use maze-geometry-aware candidate selection.
+    wall_aware_planning: bool = False
+    wall_aware_plan_samples: int = 1
     save_checkpoint_every: int = 5000
     online_self_improve: bool = False
     disable_online_collection: bool = False
@@ -413,20 +414,23 @@ def parse_args() -> Config:
         "--wall_aware_planning",
         dest="wall_aware_planning",
         action="store_true",
-        help="During imagined planning, sample multiple candidates and prefer trajectories that avoid wall cells.",
+        help=(
+            "Enable multi-candidate imagined planning (selection by final-goal error only). "
+            "Maze wall-hit scoring is not used for plan selection."
+        ),
     )
     parser.add_argument(
         "--no_wall_aware_planning",
         dest="wall_aware_planning",
         action="store_false",
-        help="Disable wall-aware candidate selection during planning.",
+        help="Disable multi-candidate imagined planning (single sampled plan per replan).",
     )
     parser.set_defaults(wall_aware_planning=Config.wall_aware_planning)
     parser.add_argument(
         "--wall_aware_plan_samples",
         type=int,
         default=Config.wall_aware_plan_samples,
-        help="Number of imagined candidates per plan when wall-aware planning is enabled.",
+        help="Number of imagined candidates per replan when --wall_aware_planning is enabled.",
     )
     parser.add_argument("--save_checkpoint_every", type=int, default=Config.save_checkpoint_every)
     parser.add_argument(
@@ -1315,9 +1319,9 @@ def sample_best_plan_from_obs(
     waypoint_xy: np.ndarray | None = None,
     waypoint_t: int | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
-    n_candidates = 1
-    if wall_aware_planning and maze_arr is not None:
-        n_candidates = max(1, int(wall_aware_plan_samples))
+    # Candidate selection is based only on goal-progress surrogate
+    # (final goal distance in imagined trajectory), not on privileged maze hits.
+    n_candidates = max(1, int(wall_aware_plan_samples)) if bool(wall_aware_planning) else 1
 
     observations, actions = sample_imagined_trajectory_from_obs(
         model=model,
@@ -1332,17 +1336,15 @@ def sample_best_plan_from_obs(
     )
 
     best_idx = 0
-    best_key = None
+    best_final_goal_err = None
     for i in range(observations.shape[0]):
         xy = observations[i, :, :2]
-        wall_hits = count_wall_hits_qpos_frame(maze_arr, xy)
         final_goal_err = float(np.linalg.norm(xy[-1] - goal_xy))
-        key = (wall_hits, final_goal_err)
-        if best_key is None or key < best_key:
-            best_key = key
+        if best_final_goal_err is None or final_goal_err < best_final_goal_err:
+            best_final_goal_err = final_goal_err
             best_idx = i
 
-    selected_wall_hits = int(best_key[0]) if best_key is not None else 0
+    selected_wall_hits = int(count_wall_hits_qpos_frame(maze_arr, observations[best_idx, :, :2]))
     return (
         np.asarray(observations[best_idx], dtype=np.float32),
         np.asarray(actions[best_idx], dtype=np.float32),
