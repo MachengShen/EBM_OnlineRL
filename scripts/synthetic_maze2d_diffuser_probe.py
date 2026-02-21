@@ -1408,10 +1408,15 @@ def sample_best_plan_from_obs(
     wall_aware_plan_samples: int,
     waypoint_xy: np.ndarray | None = None,
     waypoint_t: int | None = None,
+    plan_samples: int = 1,
+    plan_score_mode: str = "none",
+    plan_score_prefix_len: int = -1,
+    replan_every: int = 8,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
-    # Candidate selection is based only on goal-progress surrogate
-    # (final goal distance in imagined trajectory), not on privileged maze hits.
-    n_candidates = max(1, int(wall_aware_plan_samples)) if bool(wall_aware_planning) else 1
+    # Determine total candidates: max of wall_aware_plan_samples (legacy) and plan_samples (new).
+    n_wall = max(1, int(wall_aware_plan_samples)) if bool(wall_aware_planning) else 1
+    n_prefix = max(1, int(plan_samples))
+    n_candidates = max(n_wall, n_prefix)
 
     observations, actions = sample_imagined_trajectory_from_obs(
         model=model,
@@ -1425,14 +1430,24 @@ def sample_best_plan_from_obs(
         waypoint_t=waypoint_t,
     )
 
-    best_idx = 0
-    best_final_goal_err = None
-    for i in range(observations.shape[0]):
-        xy = observations[i, :, :2]
-        final_goal_err = float(np.linalg.norm(xy[-1] - goal_xy))
-        if best_final_goal_err is None or final_goal_err < best_final_goal_err:
-            best_final_goal_err = final_goal_err
-            best_idx = i
+    # Determine prefix length for scoring.
+    prefix_L = int(plan_score_prefix_len) if plan_score_prefix_len > 0 else max(1, int(replan_every))
+    prefix_L = min(prefix_L, observations.shape[1])
+    goal_xy_arr = np.asarray(goal_xy, dtype=np.float32)
+
+    def _score_plan(i: int) -> float:
+        xy = np.asarray(observations[i, :, :2], dtype=np.float32)
+        if plan_score_mode == "min_dist_prefix":
+            dists = np.linalg.norm(xy[:prefix_L] - goal_xy_arr, axis=-1)
+            return float(np.min(dists))
+        elif plan_score_mode == "dist_at_L":
+            idx = min(prefix_L - 1, xy.shape[0] - 1)
+            return float(np.linalg.norm(xy[idx] - goal_xy_arr))
+        else:
+            # "none" — fall back to final goal error (original behavior).
+            return float(np.linalg.norm(xy[-1] - goal_xy_arr))
+
+    best_idx = int(np.argmin([_score_plan(i) for i in range(n_candidates)]))
 
     selected_wall_hits = int(count_wall_hits_qpos_frame(maze_arr, observations[best_idx, :, :2]))
     return (
