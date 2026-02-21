@@ -380,7 +380,8 @@ def _rollout_sac_stochastic(
     goal_xy: np.ndarray,
     rollout_horizon: int,
     decision_every_n_steps: int,
-) -> Tuple[np.ndarray, float, float]:
+    goal_thresholds: Tuple[float, ...] = (0.1, 0.2),
+) -> Tuple[np.ndarray, float, float, Dict[str, Any]]:
     obs = dprobe.reset_rollout_start(env, start_xy=np.asarray(start_xy, dtype=np.float32))
     traj_xy: List[np.ndarray] = [np.asarray(obs[:2], dtype=np.float32)]
     min_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
@@ -389,6 +390,9 @@ def _rollout_sac_stochastic(
     act_low = np.asarray(env.action_space.low, dtype=np.float32)
     act_high = np.asarray(env.action_space.high, dtype=np.float32)
     stride = max(1, int(decision_every_n_steps))
+
+    # Track first-hit steps for each threshold
+    first_hit_step: Dict[float, int | None] = {th: None for th in goal_thresholds}
 
     cached_action = None
     for t in range(int(rollout_horizon)):
@@ -400,8 +404,16 @@ def _rollout_sac_stochastic(
         dist = float(np.linalg.norm(obs[:2] - goal_xy))
         min_goal_dist = min(min_goal_dist, dist)
         final_goal_dist = dist
+        for th in goal_thresholds:
+            if first_hit_step[th] is None and dist <= th:
+                first_hit_step[th] = t
 
-    return np.stack(traj_xy, axis=0), float(min_goal_dist), float(final_goal_dist)
+    extra: Dict[str, Any] = {}
+    for th in goal_thresholds:
+        key_suffix = f"{th:.1f}".replace(".", "p")
+        extra[f"steps_to_threshold_{key_suffix}"] = first_hit_step[th]
+
+    return np.stack(traj_xy, axis=0), float(min_goal_dist), float(final_goal_dist), extra
 
 
 def _plot_query_rollout_compare(
@@ -683,6 +695,8 @@ def main() -> None:
         d_clip_frac_list: List[float] = []
         d_steps_0p1_list: List[Any] = []
         d_steps_0p2_list: List[Any] = []
+        s_steps_0p1_list: List[Any] = []
+        s_steps_0p2_list: List[Any] = []
         for _ in range(int(args.rollouts_per_query)):
             d_traj, d_min, _d_fin, d_extra = _rollout_diffuser_stochastic(
                 dprobe,
@@ -716,7 +730,7 @@ def main() -> None:
                 d_plot_trajs.append(np.asarray(d_traj, dtype=np.float32))
 
             if _sac_enabled:
-                s_traj, s_min, _s_fin = _rollout_sac_stochastic(
+                s_traj, s_min, _s_fin, s_extra = _rollout_sac_stochastic(
                     dprobe,
                     agent=s_agent,
                     env=s_env,
@@ -727,12 +741,16 @@ def main() -> None:
                 )
                 s_end_xy.append(np.asarray(s_traj[-1], dtype=np.float32))
                 s_min_d.append(float(s_min))
+                s_steps_0p1_list.append(s_extra.get("steps_to_threshold_0p1"))
+                s_steps_0p2_list.append(s_extra.get("steps_to_threshold_0p2"))
                 if args.save_trajectory_plots and len(s_plot_trajs) < n_plot_rollouts:
                     s_plot_trajs.append(np.asarray(s_traj, dtype=np.float32))
             else:
                 # SAC not available; fill with NaN sentinel
                 s_end_xy.append(np.full(2, float("nan"), dtype=np.float32))
                 s_min_d.append(float("nan"))
+                s_steps_0p1_list.append(None)
+                s_steps_0p2_list.append(None)
 
         d_end_xy_np = np.asarray(d_end_xy, dtype=np.float32)
         s_end_xy_np = np.asarray(s_end_xy, dtype=np.float32)
@@ -749,6 +767,13 @@ def main() -> None:
         d_hit_rate_0p2 = float(len(_valid_0p2)) / len(d_steps_0p2_list) if d_steps_0p2_list else float("nan")
         d_steps_mean_0p1 = float(np.mean(_valid_0p1)) if _valid_0p1 else float("nan")
         d_steps_mean_0p2 = float(np.mean(_valid_0p2)) if _valid_0p2 else float("nan")
+        # SAC hit-rate metrics (symmetric with Diffuser)
+        _s_valid_0p1 = [x for x in s_steps_0p1_list if x is not None]
+        _s_valid_0p2 = [x for x in s_steps_0p2_list if x is not None]
+        s_hit_rate_0p1 = float(len(_s_valid_0p1)) / len(s_steps_0p1_list) if s_steps_0p1_list else float("nan")
+        s_hit_rate_0p2 = float(len(_s_valid_0p2)) / len(s_steps_0p2_list) if s_steps_0p2_list else float("nan")
+        s_steps_mean_0p1 = float(np.mean(_s_valid_0p1)) if _s_valid_0p1 else float("nan")
+        s_steps_mean_0p2 = float(np.mean(_s_valid_0p2)) if _s_valid_0p2 else float("nan")
 
         rows.append(
             {
@@ -776,6 +801,10 @@ def main() -> None:
                 "diffuser_hit_rate_0p2": d_hit_rate_0p2,
                 "diffuser_steps_to_0p1_mean": d_steps_mean_0p1,
                 "diffuser_steps_to_0p2_mean": d_steps_mean_0p2,
+                "sac_hit_rate_0p1": s_hit_rate_0p1,
+                "sac_hit_rate_0p2": s_hit_rate_0p2,
+                "sac_steps_to_0p1_mean": s_steps_mean_0p1,
+                "sac_steps_to_0p2_mean": s_steps_mean_0p2,
             }
         )
         if args.save_trajectory_plots and d_plot_trajs and s_plot_trajs:
@@ -842,6 +871,10 @@ def main() -> None:
         "diffuser_hit_rate_0p2": _col_mean("diffuser_hit_rate_0p2"),
         "diffuser_steps_to_0p1_mean": _col_mean("diffuser_steps_to_0p1_mean"),
         "diffuser_steps_to_0p2_mean": _col_mean("diffuser_steps_to_0p2_mean"),
+        "sac_hit_rate_0p1": _col_mean("sac_hit_rate_0p1"),
+        "sac_hit_rate_0p2": _col_mean("sac_hit_rate_0p2"),
+        "sac_steps_to_0p1_mean": _col_mean("sac_steps_to_0p1_mean"),
+        "sac_steps_to_0p2_mean": _col_mean("sac_steps_to_0p2_mean"),
         # Config echoed for traceability
         "action_scale_mult": float(args.diffuser_action_scale_mult),
         "action_ema_beta": float(args.diffuser_action_ema_beta),

@@ -53,7 +53,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--rollouts_per_query", type=int, default=6)
     p.add_argument("--rollout_horizon", type=int, default=192)
     p.add_argument("--diffuser_replan_every", type=int, default=8)
-    p.add_argument("--goal_success_threshold", type=float, default=0.5)
+    p.add_argument("--goal_success_threshold", type=float, default=0.2)
     # Grid axes
     p.add_argument("--alpha_grid", default="1.0,1.2,1.4",
                    help="Comma-separated action_scale_mult values.")
