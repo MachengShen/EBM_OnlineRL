@@ -1851,6 +1851,15 @@ def rollout_to_goal(
     open_loop_actions: np.ndarray | None = None,
     waypoint_xy: np.ndarray | None = None,
     waypoint_t: int | None = None,
+    action_scale_mult: float = 1.0,
+    action_ema_beta: float = 0.0,
+    adaptive_replan: bool = False,
+    adaptive_replan_min: int = 4,
+    adaptive_replan_max: int = 16,
+    adaptive_replan_progress_eps: float = 0.01,
+    plan_samples: int = 1,
+    plan_score_mode: str = "none",
+    plan_score_prefix_len: int = -1,
 ) -> Tuple[np.ndarray, np.ndarray, float, float, int]:
     obs = reset_rollout_start(rollout_env, start_xy=start_xy)
     min_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
@@ -1868,12 +1877,22 @@ def rollout_to_goal(
         if open_loop_actions is None:
             raise ValueError("open_loop rollout requires open_loop_actions.")
         open_loop_actions = np.asarray(open_loop_actions, dtype=np.float32)
+        _prev_exec_action = np.zeros(dataset.action_dim, dtype=np.float32)
         for t in range(rollout_horizon):
             if t < len(open_loop_actions):
                 act = open_loop_actions[t]
             else:
                 act = np.zeros(dataset.action_dim, dtype=np.float32)
-            action = np.clip(act, act_low, act_high).astype(np.float32)
+            # Action scaling + EMA transform (RANK 2)
+            act_scaled = np.clip(float(action_scale_mult) * act, act_low, act_high)
+            if t == 0 or float(action_ema_beta) == 0.0:
+                action = act_scaled.astype(np.float32)
+            else:
+                action = np.clip(
+                    (1.0 - float(action_ema_beta)) * act_scaled + float(action_ema_beta) * _prev_exec_action,
+                    act_low, act_high,
+                ).astype(np.float32)
+            _prev_exec_action = action.copy()
             obs, _, _, _ = safe_step(rollout_env, action)
             dist = float(np.linalg.norm(obs[:2] - goal_xy))
             min_goal_dist = min(min_goal_dist, dist)
@@ -1884,8 +1903,32 @@ def rollout_to_goal(
     elif rollout_mode == "receding_horizon":
         planned_actions = np.zeros((0, dataset.action_dim), dtype=np.float32)
         plan_offset = 0
+        _prev_exec_action = np.zeros(dataset.action_dim, dtype=np.float32)
+        _steps_since_replan = 0
+        _prev_dist = float(np.linalg.norm(obs[:2] - goal_xy))
+        _adaptive_stall_steps = 0
+
         for t in range(rollout_horizon):
-            should_replan = (t % replan_stride == 0) or (plan_offset >= len(planned_actions))
+            # Adaptive replanning: trigger early if progress stalls.
+            if adaptive_replan and t > 0:
+                _progress = _prev_dist - float(np.linalg.norm(obs[:2] - goal_xy))
+                if _progress < float(adaptive_replan_progress_eps):
+                    _adaptive_stall_steps += 1
+                else:
+                    _adaptive_stall_steps = 0
+            _adaptive_trigger = (
+                adaptive_replan
+                and _adaptive_stall_steps >= 1
+                and _steps_since_replan >= int(adaptive_replan_min)
+            )
+            _prev_dist = float(np.linalg.norm(obs[:2] - goal_xy))
+
+            should_replan = (
+                (t % replan_stride == 0)
+                or (plan_offset >= len(planned_actions))
+                or _adaptive_trigger
+            )
+
             if should_replan:
                 _, best_actions, _ = sample_best_plan_from_obs(
                     model=model,
@@ -1899,16 +1942,35 @@ def rollout_to_goal(
                     wall_aware_plan_samples=wall_aware_plan_samples,
                     waypoint_xy=waypoint_xy,
                     waypoint_t=waypoint_t,
+                    plan_samples=int(plan_samples),
+                    plan_score_mode=str(plan_score_mode),
+                    plan_score_prefix_len=int(plan_score_prefix_len),
+                    replan_every=replan_stride,
                 )
                 planned_actions = np.asarray(best_actions, dtype=np.float32)
                 plan_offset = 0
+                _steps_since_replan = 0
+                if _adaptive_trigger:
+                    _adaptive_stall_steps = 0
+
+            _steps_since_replan += 1
 
             if plan_offset >= len(planned_actions):
                 action = np.zeros(dataset.action_dim, dtype=np.float32)
             else:
                 action = planned_actions[plan_offset].astype(np.float32)
                 plan_offset += 1
-            action = np.clip(action, act_low, act_high).astype(np.float32)
+
+            # Action scaling + EMA transform (RANK 2)
+            act_scaled = np.clip(float(action_scale_mult) * action, act_low, act_high)
+            if t == 0 or float(action_ema_beta) == 0.0:
+                action = act_scaled.astype(np.float32)
+            else:
+                action = np.clip(
+                    (1.0 - float(action_ema_beta)) * act_scaled + float(action_ema_beta) * _prev_exec_action,
+                    act_low, act_high,
+                ).astype(np.float32)
+            _prev_exec_action = action.copy()
 
             obs, _, _, _ = safe_step(rollout_env, action)
             dist = float(np.linalg.norm(obs[:2] - goal_xy))
