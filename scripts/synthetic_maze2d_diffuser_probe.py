@@ -229,6 +229,31 @@ class Config:
     # Non-privileged default: do not use maze-geometry-aware candidate selection.
     wall_aware_planning: bool = False
     wall_aware_plan_samples: int = 1
+
+    # --- Execution-time action transform (RANK 2) ---
+    # Multiply planned actions by this scalar before clipping (counters conservative magnitude).
+    diffuser_action_scale_mult: float = 1.0
+    # EMA smoothing on executed actions: a_exec = (1-beta)*a_raw + beta*a_prev (0.0 = off).
+    diffuser_action_ema_beta: float = 0.0
+
+    # --- Adaptive replanning (RANK 4) ---
+    # If True, replan early when goal progress stalls.
+    adaptive_replan: bool = False
+    # Minimum steps between replans when adaptive mode is on.
+    adaptive_replan_min: int = 4
+    # Maximum steps between replans (clamps upward when progress is steady).
+    adaptive_replan_max: int = 16
+    # Progress threshold: replan if dist reduction over last step < this.
+    adaptive_replan_progress_eps: float = 0.01
+
+    # --- Prefix-progress plan scoring / best-of-K (RANK 1) ---
+    # Number of imagined plans to sample per replan step (1 = no selection).
+    plan_samples: int = 1
+    # Scoring mode: "none" | "min_dist_prefix" | "dist_at_L"
+    plan_score_mode: str = "none"
+    # Length of prefix used for scoring (-1 => use replan_every steps).
+    plan_score_prefix_len: int = -1
+
     save_checkpoint_every: int = 5000
     online_self_improve: bool = False
     disable_online_collection: bool = False
@@ -431,6 +456,71 @@ def parse_args() -> Config:
         type=int,
         default=Config.wall_aware_plan_samples,
         help="Number of imagined candidates per replan when --wall_aware_planning is enabled.",
+    )
+    # --- Execution-time action transform ---
+    parser.add_argument(
+        "--diffuser_action_scale_mult",
+        type=float,
+        default=Config.diffuser_action_scale_mult,
+        help="Multiply planned Diffuser actions by this scalar before clipping (default 1.0 = off).",
+    )
+    parser.add_argument(
+        "--diffuser_action_ema_beta",
+        type=float,
+        default=Config.diffuser_action_ema_beta,
+        help="EMA smoothing on Diffuser executed actions: a_exec=(1-b)*a_raw+b*a_prev (0.0=off).",
+    )
+    # --- Adaptive replanning ---
+    parser.add_argument(
+        "--adaptive_replan",
+        dest="adaptive_replan",
+        action="store_true",
+        help="Enable adaptive replanning: replan early when goal progress stalls.",
+    )
+    parser.add_argument(
+        "--no_adaptive_replan",
+        dest="adaptive_replan",
+        action="store_false",
+        help="Disable adaptive replanning (default).",
+    )
+    parser.set_defaults(adaptive_replan=Config.adaptive_replan)
+    parser.add_argument(
+        "--adaptive_replan_min",
+        type=int,
+        default=Config.adaptive_replan_min,
+        help="Min steps between adaptive replans.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_max",
+        type=int,
+        default=Config.adaptive_replan_max,
+        help="Max steps between adaptive replans.",
+    )
+    parser.add_argument(
+        "--adaptive_replan_progress_eps",
+        type=float,
+        default=Config.adaptive_replan_progress_eps,
+        help="Replan early if per-step distance reduction < this value.",
+    )
+    # --- Prefix-progress plan scoring ---
+    parser.add_argument(
+        "--plan_samples",
+        type=int,
+        default=Config.plan_samples,
+        help="Number of imagined plans sampled per replan; best selected by prefix score.",
+    )
+    parser.add_argument(
+        "--plan_score_mode",
+        type=str,
+        default=Config.plan_score_mode,
+        choices=["none", "min_dist_prefix", "dist_at_L"],
+        help="Scoring mode for plan selection: none|min_dist_prefix|dist_at_L.",
+    )
+    parser.add_argument(
+        "--plan_score_prefix_len",
+        type=int,
+        default=Config.plan_score_prefix_len,
+        help="Prefix length for scoring (-1 = use replan_every steps).",
     )
     parser.add_argument("--save_checkpoint_every", type=int, default=Config.save_checkpoint_every)
     parser.add_argument(
