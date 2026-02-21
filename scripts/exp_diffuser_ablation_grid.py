@@ -88,23 +88,24 @@ def run_condition(
         ENV_PREFIX,
         PYTHON,
         ANALYZER,
-        f"--diffuser_run_dir {args.diffuser_run_dir}",
-        f"--num_queries {args.num_queries}",
-        f"--samples_per_query {args.samples_per_query}",
-        f"--rollouts_per_query {args.rollouts_per_query}",
-        f"--rollout_horizon {args.rollout_horizon}",
-        f"--diffuser_replan_every {args.diffuser_replan_every}",
-        f"--goal_success_threshold {args.goal_success_threshold}",
+        f"--diffuser-run-dir {args.diffuser_run_dir}",
+        f"--num-queries {args.num_queries}",
+        f"--samples-per-query {args.samples_per_query}",
+        f"--rollouts-per-query {args.rollouts_per_query}",
+        f"--rollout-horizon {args.rollout_horizon}",
+        f"--diffuser-replan-every {args.diffuser_replan_every}",
+        f"--goal-success-threshold {args.goal_success_threshold}",
         f"--device {args.device}",
         f"--diffuser-action-scale-mult {alpha}",
         f"--diffuser-action-ema-beta {beta}",
-        "--adaptive-replan" if adaptive else "--no-adaptive-replan",
         f"--plan-samples {plan_samples}",
         f"--plan-score-mode {args.plan_score_mode if plan_samples > 1 else 'none'}",
-        f"--outdir {out_dir}",
+        f"--out-dir {out_dir}",
     ]
+    if adaptive:
+        cmd_parts.append("--adaptive-replan")
     if args.sac_run_dir:
-        cmd_parts.append(f"--sac_run_dir {args.sac_run_dir}")
+        cmd_parts.append(f"--sac-run-dir {args.sac_run_dir}")
 
     cmd = " ".join(cmd_parts)
     print(f"\n[GRID] {cond_name}")
