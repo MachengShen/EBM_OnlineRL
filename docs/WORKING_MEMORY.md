@@ -22,11 +22,14 @@ Validate and improve online Maze2D performance by determining whether gains are 
   - Evidence FOR: learner main effect diffuser `0.8819` vs SAC `0.8472` (n=12/learner, h256)
   - Next discriminating test: promote to 5 seeds; run waypoint/diversity diagnostics.
 
-- H3 (supported): SAC collector advantage is control-aware (better goal-directed coverage), not raw action noise.
-  - Status: supported (multi-seed consolidation 12 cells + visual falsification)
+- H3 (strongly supported): SAC collector advantage is control-aware (better goal-directed coverage), not raw action noise.
+  - Status: strongly supported (multi-seed consolidation + visual falsification + ablation grid interaction analysis)
   - Evidence FOR: Diffuser action pairwise L2 > SAC in `11/12` cells; SAC endpoint pairwise L2 > Diffuser in `11/12` cells — `consolidated_overall_summary.json`
   - Evidence FOR: SAC reaches near-goal (`<=0.1`) ~61 steps faster on average where both succeed (seed-0, 4/6 queries) — `visual_check_phase1_seed0_q6_s20_r6_h192/steps_to_goal_threshold_0p1_summary.json`
-  - Next discriminating test: replanning-cadence/horizon ablations on Diffuser to isolate control-frequency effects.
+  - Evidence FOR (ablation grid): EMA+adaptive closes Diffuser gap from 19pp to **2.8pp within-condition** (best Diffuser 0.639 vs SAC 0.667). These interventions address *control responsiveness*, not action noise — confirming the mechanism is temporal control quality.
+  - Evidence FOR (ablation grid): Action scaling (alpha>1.0, increasing raw magnitude) is neutral-to-harmful (+53% clip fraction at alpha=1.4), disconfirming a raw-magnitude deficit explanation.
+  - Evidence FOR (ablation grid): Strong beta×adaptive interaction (magnitude 0.083) — smoothing alone hurts, adaptive alone neutral, **together** they produce +11pp. This synergy = reducing jitter (EMA) enables earlier re-commitment to better plans (adaptive) — both are control-quality interventions.
+  - Next discriminating test: promote best condition (alpha=1.0, beta=0.5, adaptive=True) to multi-seed swap matrix to confirm gap closure holds end-to-end.
 
 ## Required Environment (minimal, no secrets)
 ```bash
