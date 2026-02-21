@@ -1,5 +1,138 @@
 # EBM Online RL Handoff Log (append-only)
 
+## 2026-02-21T15:35:00+08:00
+<!-- meta: {"type":"experiment_complete","artifact":"runs/analysis/ablation_grid/grid_20260221-134801","dirty":false} -->
+
+### Scope
+Ablation grid complete (12/12 conditions). Key findings confirm EMA+adaptive_replan combination as the winning intervention.
+
+### Results
+- **Best**: `alpha=1.0, beta=0.5, adaptive=True` → success=63.9% (baseline 52.8%, +11pp; SAC 66.7-72.2% on same eval)
+- Diffuser-SAC collector gap reduced from ~19pp → ~8pp with best params
+- Key interaction: EMA alone (50.0%) and adaptive alone (52.8%) do NOT help; **together** → 63.9%
+- Action scaling (alpha>1.0): neutral to mildly counterproductive; alpha=1.4 causes ~53% clip fraction (saturation)
+- Second best: `alpha=1.4, beta=0.5, adaptive=True` → 58.3% (min_dist 0.558, slightly better path quality than #1)
+- Artifact: `runs/analysis/ablation_grid/grid_20260221-134801/ablation_grid_results.{csv,json}`
+
+### H3 update
+- H3 (SAC control-aware advantage) now partially targeted: best Diffuser params reduce the gap by ~57% (19→8pp)
+- Remaining gap is structural (replanning cadence, horizon, goal-directed plan selection) — not just action magnitude
+
+### Next step
+- 5-seed swap matrix to strengthen H2 confidence intervals (see WORKING_MEMORY "Next Experiment")
+- Then: re-run 3-seed swap matrix WITH best ablation params (beta=0.5, adaptive=True) to test end-to-end gap closure
+
+---
+
+## 2026-02-21T14:30:00+08:00
+<!-- meta: {"type":"bugfix+launch","commit":"33d2484","dirty":false} -->
+
+### Scope
+Fixed CLI arg underscore→hyphen mismatch in `exp_diffuser_ablation_grid.py` (all conditions were failing with argparse error). Ablation grid is now running.
+
+### Actions
+- `33d2484`: Fixed `exp_diffuser_ablation_grid.py`: all args now use hyphens (`--diffuser-run-dir`, `--num-queries`, etc.), removed `--no-adaptive-replan` (not a valid argparse flag), fixed `--outdir`→`--out-dir`, `--sac_run_dir`→`--sac-run-dir`.
+- Pushed fix to master + main.
+- Relaunched ablation grid: `runs/analysis/ablation_grid/grid_20260221-134801` — confirmed PID 31439 at 102% CPU on condition `alpha1.00_beta0.00_adapt0_K1`.
+
+### Grid spec
+- 12 conditions: alpha=[1.0,1.2,1.4] × beta=[0.0,0.5] × adaptive=[0,1] × plan_samples=[1]
+- Budget per condition: 6 queries × 20 samples × 6 rollouts × horizon=192
+- Output: `runs/analysis/ablation_grid/grid_20260221-134801/ablation_grid_results.{csv,json}`
+
+---
+
+## 2026-02-21T14:00:00+08:00
+<!-- meta: {"type":"implementation","commits":["f9cbca3","f1e40e1","f3abe66","3a0e512","52506d6"],"dirty":false} -->
+
+### Scope
+Implemented GPT Pro's Diffuser improvement plan (TOP-3-A + RANK 1 prefix scoring). All changes are in execution-time; no retraining required. Also created ablation grid runner. Pushed all commits to master + main.
+
+### Actions
+- T1 `f9cbca3`: Added 9 new Config fields + CLI args to `synthetic_maze2d_diffuser_probe.py`:
+  - `diffuser_action_scale_mult`, `diffuser_action_ema_beta` (action transform, RANK 2)
+  - `adaptive_replan`, `adaptive_replan_min`, `adaptive_replan_max`, `adaptive_replan_progress_eps` (adaptive replan, RANK 4)
+  - `plan_samples`, `plan_score_mode`, `plan_score_prefix_len` (prefix-progress scoring, RANK 1)
+- T2 `f1e40e1`: Extended `sample_best_plan_from_obs` with best-of-K prefix scoring (min_dist_prefix / dist_at_L modes).
+- T3+T4 `f3abe66`: Extended `rollout_to_goal` with action scaling+EMA and adaptive replanning logic.
+- T5 `3a0e512`: Extended `analyze_collector_stochasticity.py`:
+  - New flags: `--diffuser-action-scale-mult`, `--diffuser-action-ema-beta`, `--adaptive-replan`, `--plan-samples`, `--plan-score-mode`
+  - New output metrics: `mean_action_l2_raw`, `clip_fraction`, `hit_rate_0p1`, `hit_rate_0p2`, `steps_to_0p1_mean`, `steps_to_0p2_mean`
+  - SAC is now optional (`--sac-run-dir` can be omitted for Diffuser-only ablations)
+- T6 `52506d6`: New `scripts/exp_diffuser_ablation_grid.py` — sweeps alpha × beta × adaptive × plan_samples.
+- Implementation plan: `docs/plans/2026-02-21-diffuser-collector-improvements.md`
+- Pushed all commits to: `https://github.com/MachengShen/EBM_OnlineRL/tree/master` and `main`
+
+### Changed files
+- `scripts/synthetic_maze2d_diffuser_probe.py` (+175 lines)
+- `scripts/analyze_collector_stochasticity.py` (+265 lines)
+- `scripts/exp_diffuser_ablation_grid.py` (new)
+- `docs/plans/2026-02-21-diffuser-collector-improvements.md` (new)
+
+### Next step (runnable — ablation grid)
+```bash
+D4RL_SUPPRESS_IMPORT_ERROR=1 MUJOCO_GL=egl \
+  LD_LIBRARY_PATH=/tmp/mujoco_compat:/root/.mujoco/mujoco210/bin:$LD_LIBRARY_PATH \
+  PYTHONPATH=third_party/diffuser-maze2d \
+  third_party/diffuser/.venv38/bin/python3.8 scripts/exp_diffuser_ablation_grid.py \
+  --diffuser_run_dir runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/diffuser/seed_0 \
+  --sac_run_dir runs/analysis/swap_matrix/swap_matrix_20260219-231605/phase1_collectors/sac_her_sparse/seed_0 \
+  --num_queries 6 --samples_per_query 20 --rollouts_per_query 6 --rollout_horizon 192 \
+  --alpha_grid 1.0,1.2,1.4 --beta_grid 0.0,0.5 --adaptive_grid 0,1 --plan_samples_grid 1 \
+  --base_dir runs/analysis/ablation_grid/grid_YYYYMMDD-HHMMSS \
+  2>&1 | tee runs/analysis/ablation_grid_latest.log
+```
+Expected outputs:
+- `runs/analysis/ablation_grid/grid_.../ablation_grid_results.csv`
+- `runs/analysis/ablation_grid/grid_.../ablation_grid_results.json`
+
+## 2026-02-21T14:30:00+08:00
+<!-- meta: {"type":"fix+launch","commit":"33d2484","dirty":false} -->
+
+### Scope
+Fixed ablation grid arg names (underscore→hyphen, `--outdir`→`--out-dir`, removed `--no-adaptive-replan`). Launched corrected 12-condition ablation grid.
+
+### Actions
+- Bug: `exp_diffuser_ablation_grid.py` passed underscore-style args to analyzer → argparse error exit_code=2 on all conditions.
+- Fix commit `33d2484`: corrected all arg names, removed non-existent `--no-adaptive-replan` flag.
+- Two failed runs: `grid_20260221-134600`, `grid_20260221-134630` (both usable as negative control).
+- Corrected grid launched at 13:48: `runs/analysis/ablation_grid/grid_20260221-134801` (12 conditions, PID 31435).
+  - First condition `alpha1.00_beta0.00_adapt0_K1` running (13:48–, analyzer PID 31439, 103% CPU).
+
+### Next step
+Monitor `grid_20260221-134801`. When `ablation_grid_results.csv` contains >1 row with metrics, analyze top conditions.
+
+## 2026-02-20T23:00:00+08:00
+<!-- meta: {"type":"commit+bundle","commit":"5c9bcb6","dirty":false} -->
+
+### Scope
+- Committed all experiment scripts and research notes to GitHub remote (master branch).
+- Created GPT-Pro handoff zip bundle with all referenced artifacts.
+
+### Actions
+- Staged and committed: `scripts/analyze_collector_stochasticity.py`, `scripts/exp_swap_matrix_maze2d.py`, `scripts/synthetic_maze2d_diffuser_probe.py`, `gpt_pro_diffuser_improvement_question_2026-02-20.txt`, `research_finding.txt`, `research_finding_paper_outline.md`, `docs/WORKING_MEMORY.md`, `HANDOFF_LOG.md`; deleted `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`.
+- Pushed to: `https://github.com/MachengShen/EBM_OnlineRL/tree/master`
+- Commit: `5c9bcb6` — "feat: add collector-stochasticity analyzer, GPT-Pro handoff, and non-privileged Diffuser defaults"
+- Created bundle zip:
+  - Path: `/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip` (0.18 MB)
+  - Structure:
+    ```
+    gpt_pro_handoff_bundle_20260220/
+      gpt_pro_diffuser_improvement_question_2026-02-20.txt  ← updated with repo/ paths
+      repo/
+        scripts/{synthetic_maze2d_diffuser_probe.py, analyze_collector_stochasticity.py,
+                 exp_swap_matrix_maze2d.py, exp_replan_horizon_sweep.py}
+        runs/analysis/swap_matrix/swap_matrix_20260219-231605/swap_matrix_results.csv
+        runs/analysis/collector_stochasticity/consolidation_q10_s40_r8_h192/consolidated_overall_summary.json
+        runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/{...json, ...npz, ...png}
+    ```
+
+### GitHub link
+- https://github.com/MachengShen/EBM_OnlineRL/blob/master/gpt_pro_diffuser_improvement_question_2026-02-20.txt
+
+### Next step
+- Send `gpt_pro_handoff_bundle_20260220.zip` + GitHub link to GPT Pro for ranked intervention suggestions.
+
 ## 2026-02-19T17:22:45+08:00
 ### Scope
 - Consolidated repository handoff history.
@@ -907,3 +1040,89 @@ python3 scripts/exp_swap_matrix_maze2d.py --help
 
 ### Next step
 - Re-run at least a smoke + one seed of swap-matrix/collector diagnostics under new defaults to quantify impact of removing privileged selection logic.
+## 2026-02-20T22:47:26+08:00
+### Scope
+- Completed follow-up analysis task for old-vs-new Diffuser default smoke comparison and updated working memory with evidence.
+
+### Actions
+- Parsed job log for the relay-launched smoke run:
+  - `runs/analysis/smoke_old_vs_new_defaults_latest.log`
+- Read newest smoke artifacts:
+  - `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/old_vs_new_smoke_summary.json`
+  - `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/old_vs_new_smoke_rows.csv`
+- Computed per-query and rollout-level deltas for success, goal distance, wall hits, and first-hit counts.
+- Updated living snapshot:
+  - `docs/WORKING_MEMORY.md`
+
+### Evidence
+- Log:
+  - `runs/analysis/smoke_old_vs_new_defaults_latest.log`
+- Summary artifact:
+  - `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/old_vs_new_smoke_summary.json`
+- Row-level artifact:
+  - `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/old_vs_new_smoke_rows.csv`
+
+### Key readout (new defaults minus old defaults)
+- Setup:
+  - old: `wall_aware_planning=True`, `wall_aware_plan_samples=8`
+  - new: `wall_aware_planning=False`, `wall_aware_plan_samples=1`
+  - matched checkpoint/replay, `6 queries x 3 rollouts`, horizon `128`, success threshold `0.2`
+- Deltas:
+  - success rate: `-0.0556` (`0.2778` vs `0.3333`)
+  - min goal distance mean: `+0.0568` (`0.7802` vs `0.7234`)
+  - final goal distance mean: `+0.0567` (`0.7824` vs `0.7257`)
+  - wall hits mean: `+18.7778` (`47.5` vs `28.72`)
+  - first-hit (`<=0.1`) count: `1` vs `1`; no paired-hit rows for robust speed delta.
+
+### Conclusion
+- This smoke sample suggests the non-privileged default change can reduce collector effectiveness on average under this small budget, but effects are mixed per query and not yet statistically stable.
+
+### Next step
+- Promote this to at least one full seed (same metric suite as phase1) and then multi-seed confirmation before drawing a hard mechanism claim.
+
+
+## 2026-02-20T14:48:18.435Z
+### Objective
+- Preserve the current validation-cycle state and hand off remaining callback-driven Maze2D experiment work for future agents.
+
+### Changes
+- Updated `HANDOFF_LOG.md` with new handoff content (`+70` lines).
+- Updated `docs/WORKING_MEMORY.md` with current progress/context (`+25/-2`).
+- Added untracked handoff artifacts: `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, and `memory/`.
+- Captured current execution state: `pending=0`, `running=0`, `done=1`, `failed=0`, `blocked=1`, `canceled=0`.
+- Preserved active plan tail (tasks 7-15) covering script alignment, smoke checks, callback mini-pipeline, mismatch fixes, and full validation launches.
+
+### Evidence
+- Repo context: `/root/ebm-online-rl-prototype` on branch `master`.
+- Command: `git status --porcelain=v1`
+- Key output: `M HANDOFF_LOG.md`, ` M docs/WORKING_MEMORY.md`, `?? gpt_pro_handoff_bundle_20260220.zip`, `?? gpt_pro_handoff_bundle_20260220/`, `?? memory/`.
+- Command: `git diff --stat`
+- Key output: `HANDOFF_LOG.md | 70 +...`, `docs/WORKING_MEMORY.md | 25 +...--`, `2 files changed, 93 insertions(+), 2 deletions(-)`.
+
+### Next steps
+- Provide the exact attached plan text/path so tasks can be mapped precisely (instead of inferred from filenames).
+- Confirm the exact `relay-long-task-callback` command/interface expected in this repo.
+- Confirm whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` should be recreated in this validation cycle.
+- Continue remaining plan tail: run smoke verification, harden aggregation/experiment scripts, execute mini end-to-end callback pipeline, fix any schema/analysis mismatches, then launch full validation runs with ongoing `docs/WORKING_MEMORY.md` and `HANDOFF_LOG.md` updates.
+
+## 2026-02-21T16:00:00+08:00
+### Scope
+- Ablation grid `grid_20260221-134801` completed. Analyzed results and updated WORKING_MEMORY.
+
+### Evidence
+- Artifact: `runs/analysis/ablation_grid/grid_20260221-134801/ablation_grid_results.csv`
+- 12 conditions: alpha∈{1.0,1.2,1.4} × beta∈{0.0,0.5} × adaptive∈{0,1}
+
+### Key readout
+- SAC baseline: `success=0.7222`
+- Diffuser baseline (alpha=1.0, beta=0.0, adapt=False): `success=0.5278`
+- Best Diffuser: alpha=1.0, beta=0.5, adapt=True → `success=0.6389` (+11pp, -8pp gap to SAC remains)
+- Key finding: EMA smoothing (beta=0.5) alone does NOT help; adaptive replanning alone does NOT help; **both together produce a clear +11pp gain** (interaction effect)
+- Alpha scaling: neutral or counterproductive; alpha=1.4 causes 53% clip fraction
+
+### Conclusion
+- EMA + adaptive replanning is the strongest execution-time intervention found so far.
+- An 8pp gap to SAC remains. Next: promote 5-seed swap matrix, then consider baking best ablation params into a new full swap-matrix run.
+
+### Next step
+- 5-seed swap matrix (blocking open Q#1 — paper CI)

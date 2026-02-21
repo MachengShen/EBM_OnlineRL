@@ -1,9 +1,10 @@
 # EBM Online RL Working Memory (living snapshot)
 
-Last updated: 2026-02-20T22:15:28+08:00
+Last updated: 2026-02-21T16:00:00+08:00
 Repo: /root/ebm-online-rl-prototype
 Branch: master
-Commit: b9cdd15  (dirty: yes — HANDOFF_LOG.md, docs/WORKING_MEMORY.md modified; research_finding.txt untracked)
+Commit: 33d2484  (dirty: no)
+GitHub: https://github.com/MachengShen/EBM_OnlineRL/tree/master
 
 ## Objective
 Validate and improve online Maze2D performance by determining whether gains are driven by data collection policy (collector), learner updates, or both. Primary focus: characterize and explain SAC's collector advantage over Diffuser and design targeted Diffuser improvements.
@@ -43,28 +44,45 @@ PYTHON=third_party/diffuser/.venv38/bin/python3.8
 - Notes: 3-seed matrix; promote to 5 seeds for stable confidence intervals
 
 ## Running / Active Jobs
-- None currently active.
+- None (idle)
+
+## Ablation Grid Results (COMPLETE — grid_20260221-134801)
+- 12 conditions: alpha∈{1.0,1.2,1.4} × beta∈{0.0,0.5} × adaptive∈{0,1}, seed_0 diagnostic (6q×6r, h192)
+- SAC baseline (same checkpoint): `success=0.7222`, endpoint_l2=0.4747
+- Diffuser baseline (alpha=1.0, beta=0.0, adapt=False): `success=0.5278`
+- **Best Diffuser**: `alpha=1.0, beta=0.5, adapt=True` → `success=0.6389` (+11pp vs baseline, -8pp vs SAC)
+- Key interaction: **EMA smoothing (beta=0.5) alone does NOT help** (0.5278→0.50); **adaptive alone does NOT help** (0.5278→0.5278); **BOTH together** → +11pp
+- Alpha scaling: neutral to mildly counterproductive; alpha=1.4 causes 53% clip fraction — saturation
+- Artifact: `runs/analysis/ablation_grid/grid_20260221-134801/ablation_grid_results.csv`
+
+Full ranking (success rate):
+| Condition | success | hit@0.1 | clip |
+|---|---|---|---|
+| alpha1.0, beta0.5, adapt=True | **0.6389** | 0.33 | 0.04 |
+| alpha1.4, beta0.5, adapt=True | 0.5833 | 0.36 | 0.53 |
+| alpha1.2, beta0.5, adapt=True | 0.5556 | 0.36 | 0.36 |
+| alpha1.0, beta0.0, adapt=False (baseline) | 0.5278 | 0.36 | 0.04 |
+| alpha1.0, beta0.0, adapt=True | 0.5278 | 0.31 | 0.04 |
+| alpha1.2, beta0.0, adapt=True | 0.5278 | 0.31 | 0.36 |
+| alpha1.4, beta0.0/0.5, adapt=* | 0.50 | ~0.30-0.39 | 0.53 |
+| alpha1.2, beta0.0/0.5, adapt=False | 0.4722 | 0.36-0.39 | 0.37 |
 
 ## Next Experiment (runnable)
 ```bash
-# Intent: promote swap matrix from 3→5 seeds to strengthen H2 confidence intervals
+# Intent: promote swap matrix from 3→5 seeds to strengthen H2 confidence intervals (blocking open Q#1)
 D4RL_SUPPRESS_IMPORT_ERROR=1 MUJOCO_GL=egl \
   LD_LIBRARY_PATH=/tmp/mujoco_compat:/root/.mujoco/mujoco210/bin:$LD_LIBRARY_PATH \
-  $PYTHON scripts/exp_swap_matrix_maze2d.py \
-  --seeds 0 1 2 3 4 \
-  --collectors diffuser sac_her_sparse \
-  --learners diffuser sac_her_sparse \
-  --modes warmstart frozen \
-  --device cuda:0 \
-  --base-dir runs/analysis/swap_matrix/5seed_$(date +%Y%m%d-%H%M%S)
+  third_party/diffuser/.venv38/bin/python3.8 scripts/exp_swap_matrix_maze2d.py \
+  --seeds 0 1 2 3 4 --collectors diffuser sac_her_sparse \
+  --learners diffuser sac_her_sparse --modes warmstart frozen \
+  --device cuda:0 --base-dir runs/analysis/swap_matrix/5seed_$(date +%Y%m%d-%H%M%S)
 ```
-Expected outputs:
-- `runs/analysis/swap_matrix/5seed_.../swap_matrix_results.csv`
-- `runs/analysis/swap_matrix/5seed_.../swap_matrix_results.md`
 
-Quick verification:
+## Secondary Experiment (after 5-seed matrix)
 ```bash
-ls -lh runs/analysis/swap_matrix/5seed_*/swap_matrix_results.{csv,md}
+# Intent: bake best ablation params (beta=0.5, adaptive=True) into swap matrix and re-run 3-seed
+# to test whether EMA+adaptive closes the collector gap end-to-end (not just on diagnostic seed_0)
+# Command TBD after 5-seed matrix completes
 ```
 
 ## Open Questions (ranked by blocking priority)
@@ -72,6 +90,7 @@ ls -lh runs/analysis/swap_matrix/5seed_*/swap_matrix_results.{csv,md}
 2. Does replanning cadence/horizon explain Diffuser controllability gap? — blocking: no — resolves with: `scripts/exp_replan_horizon_sweep.py`
 3. Is `eval_samples_per_query>1` needed to decouple query-coverage from single-trajectory success? — blocking: no — resolves with: re-run stochasticity diagnostics with `--eval_samples_per_query 4+`
 4. What concrete Diffuser modification targets the endpoint-diversity gap? — blocking: no — resolves with: mechanism analysis post-ablation
+5. How much of Diffuser collector quality depended on privileged multi-candidate selection defaults? — blocking: no — resolves with: 1-seed and 3-seed reruns under non-privileged defaults vs old defaults
 
 ## Key Artifact Pointers
 - LAST_FULL_RUN_PATH: `runs/analysis/swap_matrix/LAST_FULL_RUN_PATH.txt` → `runs/analysis/swap_matrix/swap_matrix_20260219-231605/`
@@ -82,6 +101,10 @@ ls -lh runs/analysis/swap_matrix/5seed_*/swap_matrix_results.{csv,md}
 - QUERY0_ACTION_AUDIT: `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/query_00_action_magnitude_audit.json`
 - QUERY0_SAC_CADENCE: `runs/analysis/collector_stochasticity/visual_check_phase1_seed0_q6_s20_r6_h192/query_00_sac_cadence_sensitivity.json`
 - GPT_PRO_HANDOFF_PROMPT: `gpt_pro_diffuser_improvement_question_2026-02-20.txt`
+- SMOKE_OLDVSNEW_LOG: `runs/analysis/smoke_old_vs_new_defaults_latest.log`
+- SMOKE_OLDVSNEW_ROOT: `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/`
+- SMOKE_OLDVSNEW_SUMMARY: `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/old_vs_new_smoke_summary.json`
+- SMOKE_OLDVSNEW_ROWS: `runs/analysis/smoke_old_vs_new_defaults_20260220-224338/old_vs_new_smoke_rows.csv`
 
 ## Debug note: query-0 visual vs numeric mismatch (validated)
 - User concern:
@@ -156,6 +179,20 @@ ls -lh runs/analysis/swap_matrix/5seed_*/swap_matrix_results.{csv,md}
 - Rationale:
   - Align collector behavior with inference-time assumptions that do not require privileged maze-layout logic for action selection.
 
+## Update: old-vs-new default smoke (2026-02-20)
+- Scope:
+  - Compared old default behavior (`wall_aware_planning=True`, `wall_aware_plan_samples=8`) vs new non-privileged defaults (`wall_aware_planning=False`, `wall_aware_plan_samples=1`) using the same trained checkpoint + replay artifact.
+  - Budget: `6 queries x 3 rollouts`, rollout horizon `128`, success threshold `0.2`, replan every `16`.
+- Readout (new minus old):
+  - success rate: `-0.0556` (`0.2778` vs `0.3333`)
+  - min goal distance mean: `+0.0568` (`0.7802` vs `0.7234`)
+  - final goal distance mean: `+0.0567` (`0.7824` vs `0.7257`)
+  - wall hits mean: `+18.7778` (`47.5` vs `28.72`)
+  - first-hit (`<=0.1`) counts: `1` vs `1` (not enough paired hits for robust speed inference)
+- Caveat:
+  - This is a small smoke result, not a stable estimate; per-query effects were mixed (some queries improved under new defaults).
+  - Next step is to promote to at least 1-seed full eval, then multi-seed confirmation.
+
 ## Logging policy
 - Append-only history: `HANDOFF_LOG.md`
 - Living snapshot: `docs/WORKING_MEMORY.md` (this file — overwrite/compact, do NOT append)
@@ -165,3 +202,28 @@ ls -lh runs/analysis/swap_matrix/5seed_*/swap_matrix_results.{csv,md}
 ## Archive note
 Pre-cleanup verbose logs: `/root/.log-archive/memory-cleanup-20260219-172245/ebm/`
 Pre-migration WM backup: `memory/archive/WORKING_MEMORY_pre_migration_20260220.md`
+
+
+## 2026-02-20T14:48:18.435Z
+### Objective
+- Preserve the current validation-cycle state and hand off remaining callback-driven Maze2D experiment work for future agents.
+
+### Changes
+- Updated `HANDOFF_LOG.md` with new handoff content (`+70` lines).
+- Updated `docs/WORKING_MEMORY.md` with current progress/context (`+25/-2`).
+- Added untracked handoff artifacts: `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, and `memory/`.
+- Captured current execution state: `pending=0`, `running=0`, `done=1`, `failed=0`, `blocked=1`, `canceled=0`.
+- Preserved active plan tail (tasks 7-15) covering script alignment, smoke checks, callback mini-pipeline, mismatch fixes, and full validation launches.
+
+### Evidence
+- Repo context: `/root/ebm-online-rl-prototype` on branch `master`.
+- Command: `git status --porcelain=v1`
+- Key output: `M HANDOFF_LOG.md`, ` M docs/WORKING_MEMORY.md`, `?? gpt_pro_handoff_bundle_20260220.zip`, `?? gpt_pro_handoff_bundle_20260220/`, `?? memory/`.
+- Command: `git diff --stat`
+- Key output: `HANDOFF_LOG.md | 70 +...`, `docs/WORKING_MEMORY.md | 25 +...--`, `2 files changed, 93 insertions(+), 2 deletions(-)`.
+
+### Next steps
+- Provide the exact attached plan text/path so tasks can be mapped precisely (instead of inferred from filenames).
+- Confirm the exact `relay-long-task-callback` command/interface expected in this repo.
+- Confirm whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` should be recreated in this validation cycle.
+- Continue remaining plan tail: run smoke verification, harden aggregation/experiment scripts, execute mini end-to-end callback pipeline, fix any schema/analysis mismatches, then launch full validation runs with ongoing `docs/WORKING_MEMORY.md` and `HANDOFF_LOG.md` updates.
