@@ -255,11 +255,21 @@ def _rollout_diffuser_stochastic(
     device: torch.device,
     wall_aware_planning: bool,
     wall_aware_plan_samples: int,
-) -> Tuple[np.ndarray, float, float]:
+    action_scale_mult: float = 1.0,
+    action_ema_beta: float = 0.0,
+    adaptive_replan: bool = False,
+    adaptive_replan_min: int = 4,
+    adaptive_replan_progress_eps: float = 0.01,
+    plan_samples: int = 1,
+    plan_score_mode: str = "none",
+    plan_score_prefix_len: int = -1,
+    goal_thresholds: Tuple[float, ...] = (0.1, 0.2),
+) -> Tuple[np.ndarray, float, float, Dict[str, Any]]:
     obs = dprobe.reset_rollout_start(env, start_xy=np.asarray(start_xy, dtype=np.float32))
     traj_xy: List[np.ndarray] = [np.asarray(obs[:2], dtype=np.float32)]
     min_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
     final_goal_dist = min_goal_dist
+    goal_xy_arr = np.asarray(goal_xy, dtype=np.float32)
 
     act_low = np.asarray(env.action_space.low, dtype=np.float32)
     act_high = np.asarray(env.action_space.high, dtype=np.float32)
@@ -267,37 +277,98 @@ def _rollout_diffuser_stochastic(
 
     planned_actions = np.zeros((0, dataset.action_dim), dtype=np.float32)
     plan_offset = 0
+    _prev_exec_action = np.zeros(dataset.action_dim, dtype=np.float32)
+    _steps_since_replan = 0
+    _prev_dist = float(np.linalg.norm(obs[:2] - goal_xy_arr))
+    _adaptive_stall_steps = 0
+
+    # Metric accumulators
+    _raw_norms: List[float] = []
+    _exec_norms: List[float] = []
+    _clip_flags: List[int] = []
+    _first_hit: Dict[float, Any] = {thr: None for thr in goal_thresholds}
 
     for t in range(int(rollout_horizon)):
-        if (t % stride == 0) or (plan_offset >= len(planned_actions)):
+        # Adaptive replan check
+        if adaptive_replan and t > 0:
+            _progress = _prev_dist - float(np.linalg.norm(obs[:2] - goal_xy_arr))
+            if _progress < float(adaptive_replan_progress_eps):
+                _adaptive_stall_steps += 1
+            else:
+                _adaptive_stall_steps = 0
+        _adaptive_trigger = (
+            adaptive_replan
+            and _adaptive_stall_steps >= 1
+            and _steps_since_replan >= int(adaptive_replan_min)
+        )
+        _prev_dist = float(np.linalg.norm(obs[:2] - goal_xy_arr))
+
+        if (t % stride == 0) or (plan_offset >= len(planned_actions)) or _adaptive_trigger:
             _plan_obs, best_actions, _hits = dprobe.sample_best_plan_from_obs(
                 model=model,
                 dataset=dataset,
                 start_obs=obs,
-                goal_xy=np.asarray(goal_xy, dtype=np.float32),
+                goal_xy=goal_xy_arr,
                 horizon=int(planning_horizon),
                 device=device,
                 maze_arr=None,
                 wall_aware_planning=bool(wall_aware_planning),
                 wall_aware_plan_samples=int(wall_aware_plan_samples),
+                plan_samples=int(plan_samples),
+                plan_score_mode=str(plan_score_mode),
+                plan_score_prefix_len=int(plan_score_prefix_len),
+                replan_every=stride,
             )
             planned_actions = np.asarray(best_actions, dtype=np.float32)
             plan_offset = 0
+            _steps_since_replan = 0
+            if _adaptive_trigger:
+                _adaptive_stall_steps = 0
 
-        if plan_offset >= len(planned_actions):
-            action = np.zeros(dataset.action_dim, dtype=np.float32)
+        _steps_since_replan += 1
+        action_raw = (
+            planned_actions[plan_offset] if plan_offset < len(planned_actions)
+            else np.zeros(dataset.action_dim, dtype=np.float32)
+        ).astype(np.float32)
+        plan_offset += 1
+
+        # Action scaling + EMA transform (RANK 2)
+        act_scaled = np.clip(float(action_scale_mult) * action_raw, act_low, act_high)
+        if t == 0 or float(action_ema_beta) == 0.0:
+            action = act_scaled.astype(np.float32)
         else:
-            action = planned_actions[plan_offset].astype(np.float32)
-            plan_offset += 1
-        action = np.clip(action, act_low, act_high).astype(np.float32)
+            action = np.clip(
+                (1.0 - float(action_ema_beta)) * act_scaled + float(action_ema_beta) * _prev_exec_action,
+                act_low, act_high,
+            ).astype(np.float32)
+        _prev_exec_action = action.copy()
+
+        # Track raw norms and clip flag
+        _raw_norms.append(float(np.linalg.norm(action_raw)))
+        _exec_norms.append(float(np.linalg.norm(action)))
+        scaled_pre_clip = float(action_scale_mult) * action_raw
+        clipped = int(np.any(scaled_pre_clip < act_low) or np.any(scaled_pre_clip > act_high))
+        _clip_flags.append(clipped)
 
         obs, _r, _d, _info = dprobe.safe_step(env, action)
         traj_xy.append(np.asarray(obs[:2], dtype=np.float32))
-        dist = float(np.linalg.norm(obs[:2] - goal_xy))
+        dist = float(np.linalg.norm(obs[:2] - goal_xy_arr))
         min_goal_dist = min(min_goal_dist, dist)
         final_goal_dist = dist
+        for thr in goal_thresholds:
+            if _first_hit[thr] is None and dist <= thr:
+                _first_hit[thr] = t
 
-    return np.stack(traj_xy, axis=0), float(min_goal_dist), float(final_goal_dist)
+    extra: Dict[str, Any] = {
+        "mean_action_l2_raw": float(np.mean(_raw_norms)) if _raw_norms else float("nan"),
+        "mean_action_l2_exec": float(np.mean(_exec_norms)) if _exec_norms else float("nan"),
+        "clip_fraction": float(np.mean(_clip_flags)) if _clip_flags else float("nan"),
+    }
+    for thr in goal_thresholds:
+        key = f"steps_to_threshold_{str(thr).replace('.', 'p')}"
+        extra[key] = _first_hit[thr]
+
+    return np.stack(traj_xy, axis=0), float(min_goal_dist), float(final_goal_dist), extra
 
 
 def _rollout_sac_stochastic(
@@ -429,7 +500,7 @@ def _plot_query_overlay_grid(
 def parse_args() -> argparse.Namespace:
     ap = argparse.ArgumentParser(description="Compare collector stochasticity: diffuser denoising vs SAC policy sampling.")
     ap.add_argument("--diffuser-run-dir", type=Path, required=True)
-    ap.add_argument("--sac-run-dir", type=Path, required=True)
+    ap.add_argument("--sac-run-dir", type=Path, default=None, help="Optional: SAC run dir for comparison (omit for Diffuser-only mode).")
     ap.add_argument("--diffuser-checkpoint", type=Path, default=None)
     ap.add_argument("--sac-checkpoint", type=Path, default=None)
     ap.add_argument("--num-queries", type=int, default=12)
@@ -446,6 +517,26 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--device", type=str, default="cuda:0")
     ap.add_argument("--out-dir", type=Path, default=None)
+    # --- Execution-time action transform (RANK 2) ---
+    ap.add_argument("--diffuser-action-scale-mult", type=float, default=1.0,
+                    help="Multiply Diffuser actions by this scalar before clipping (1.0 = off).")
+    ap.add_argument("--diffuser-action-ema-beta", type=float, default=0.0,
+                    help="EMA smoothing on Diffuser executed actions (0.0 = off).")
+    # --- Adaptive replanning (RANK 4) ---
+    ap.add_argument("--adaptive-replan", action="store_true", default=False,
+                    help="Enable adaptive replanning when progress stalls.")
+    ap.add_argument("--adaptive-replan-min", type=int, default=4,
+                    help="Minimum steps between adaptive replans.")
+    ap.add_argument("--adaptive-replan-progress-eps", type=float, default=0.01,
+                    help="Replan early if per-step distance reduction < this value.")
+    # --- Prefix-progress plan scoring (RANK 1) ---
+    ap.add_argument("--plan-samples", type=int, default=1,
+                    help="Number of imagined plans per replan to score and select from.")
+    ap.add_argument("--plan-score-mode", type=str, default="none",
+                    choices=["none", "min_dist_prefix", "dist_at_L"],
+                    help="Prefix scoring mode for best-of-K plan selection.")
+    ap.add_argument("--plan-score-prefix-len", type=int, default=-1,
+                    help="Prefix length for scoring (-1 = replan_every steps).")
     return ap.parse_args()
 
 
@@ -507,9 +598,7 @@ def main() -> None:
     device = torch.device(args.device if torch.cuda.is_available() else "cpu")
 
     diffuser_run = args.diffuser_run_dir.resolve()
-    sac_run = args.sac_run_dir.resolve()
     diffuser_ckpt = args.diffuser_checkpoint.resolve() if args.diffuser_checkpoint else (diffuser_run / "checkpoint_last.pt")
-    sac_ckpt = args.sac_checkpoint.resolve() if args.sac_checkpoint else (sac_run / "checkpoint_last.pt")
 
     dcfg, d_raw, d_dataset, d_model = _build_diffuser(
         dprobe,
@@ -517,13 +606,21 @@ def main() -> None:
         ckpt_path=diffuser_ckpt,
         device=device,
     )
-    scfg, s_raw, s_agent = _build_sac(
-        sprobe,
-        dprobe,
-        run_dir=sac_run,
-        ckpt_path=sac_ckpt,
-        device=device,
-    )
+
+    _sac_enabled = args.sac_run_dir is not None
+    if _sac_enabled:
+        sac_run = args.sac_run_dir.resolve()
+        sac_ckpt = args.sac_checkpoint.resolve() if args.sac_checkpoint else (sac_run / "checkpoint_last.pt")
+        scfg, s_raw, s_agent = _build_sac(
+            sprobe,
+            dprobe,
+            run_dir=sac_run,
+            ckpt_path=sac_ckpt,
+            device=device,
+        )
+    else:
+        scfg = dcfg
+        s_agent = None
 
     # Prefer query source from diffuser replay for consistency with diffuser collector settings.
     query_pairs = _build_queries(
@@ -536,7 +633,7 @@ def main() -> None:
     import gym
 
     d_env = gym.make(str(dcfg.env))
-    s_env = gym.make(str(scfg.env))
+    s_env = gym.make(str(scfg.env)) if _sac_enabled else None
     maze_arr = dprobe.load_maze_arr_from_env(str(dcfg.env))
 
     planning_horizon = int(args.planning_horizon) if args.planning_horizon is not None else int(dcfg.horizon)
@@ -562,14 +659,17 @@ def main() -> None:
         d_a0 = np.asarray(d_act_samples[:, 0, :], dtype=np.float32)
 
         # SAC action stochasticity from policy sampling at same start observation.
-        s_obs0 = dprobe.reset_rollout_start(s_env, start_xy=start_xy)
-        s_a0 = np.stack(
-            [
-                s_agent.act(np.asarray(s_obs0, dtype=np.float32), np.asarray(goal_xy, dtype=np.float32), deterministic=False)
-                for _ in range(int(args.samples_per_query))
-            ],
-            axis=0,
-        ).astype(np.float32)
+        if _sac_enabled:
+            s_obs0 = dprobe.reset_rollout_start(s_env, start_xy=start_xy)
+            s_a0 = np.stack(
+                [
+                    s_agent.act(np.asarray(s_obs0, dtype=np.float32), np.asarray(goal_xy, dtype=np.float32), deterministic=False)
+                    for _ in range(int(args.samples_per_query))
+                ],
+                axis=0,
+            ).astype(np.float32)
+        else:
+            s_a0 = np.zeros((int(args.samples_per_query), 2), dtype=np.float32)
 
         # Rollout diversity (stochastic collector behavior).
         d_end_xy: List[np.ndarray] = []
@@ -579,8 +679,12 @@ def main() -> None:
         d_plot_trajs: List[np.ndarray] = []
         s_plot_trajs: List[np.ndarray] = []
         n_plot_rollouts = min(int(args.plot_rollouts_per_query), int(args.rollouts_per_query))
+        d_mean_l2_raw_list: List[float] = []
+        d_clip_frac_list: List[float] = []
+        d_steps_0p1_list: List[Any] = []
+        d_steps_0p2_list: List[Any] = []
         for _ in range(int(args.rollouts_per_query)):
-            d_traj, d_min, _d_fin = _rollout_diffuser_stochastic(
+            d_traj, d_min, _d_fin, d_extra = _rollout_diffuser_stochastic(
                 dprobe,
                 model=d_model,
                 dataset=d_dataset,
@@ -591,33 +695,61 @@ def main() -> None:
                 rollout_horizon=int(args.rollout_horizon),
                 replan_every_n_steps=int(args.diffuser_replan_every),
                 device=device,
-                wall_aware_planning=bool(getattr(dcfg, "wall_aware_planning", True)),
-                wall_aware_plan_samples=int(getattr(dcfg, "wall_aware_plan_samples", 8)),
+                wall_aware_planning=bool(getattr(dcfg, "wall_aware_planning", False)),
+                wall_aware_plan_samples=int(getattr(dcfg, "wall_aware_plan_samples", 1)),
+                action_scale_mult=float(args.diffuser_action_scale_mult),
+                action_ema_beta=float(args.diffuser_action_ema_beta),
+                adaptive_replan=bool(args.adaptive_replan),
+                adaptive_replan_min=int(args.adaptive_replan_min),
+                adaptive_replan_progress_eps=float(args.adaptive_replan_progress_eps),
+                plan_samples=int(args.plan_samples),
+                plan_score_mode=str(args.plan_score_mode),
+                plan_score_prefix_len=int(args.plan_score_prefix_len),
             )
+            d_mean_l2_raw_list.append(d_extra.get("mean_action_l2_raw", float("nan")))
+            d_clip_frac_list.append(d_extra.get("clip_fraction", float("nan")))
+            d_steps_0p1_list.append(d_extra.get("steps_to_threshold_0p1"))
+            d_steps_0p2_list.append(d_extra.get("steps_to_threshold_0p2"))
             d_end_xy.append(np.asarray(d_traj[-1], dtype=np.float32))
             d_min_d.append(float(d_min))
             if args.save_trajectory_plots and len(d_plot_trajs) < n_plot_rollouts:
                 d_plot_trajs.append(np.asarray(d_traj, dtype=np.float32))
 
-            s_traj, s_min, _s_fin = _rollout_sac_stochastic(
-                dprobe,
-                agent=s_agent,
-                env=s_env,
-                start_xy=start_xy,
-                goal_xy=goal_xy,
-                rollout_horizon=int(args.rollout_horizon),
-                decision_every_n_steps=int(args.sac_decision_every),
-            )
-            s_end_xy.append(np.asarray(s_traj[-1], dtype=np.float32))
-            s_min_d.append(float(s_min))
-            if args.save_trajectory_plots and len(s_plot_trajs) < n_plot_rollouts:
-                s_plot_trajs.append(np.asarray(s_traj, dtype=np.float32))
+            if _sac_enabled:
+                s_traj, s_min, _s_fin = _rollout_sac_stochastic(
+                    dprobe,
+                    agent=s_agent,
+                    env=s_env,
+                    start_xy=start_xy,
+                    goal_xy=goal_xy,
+                    rollout_horizon=int(args.rollout_horizon),
+                    decision_every_n_steps=int(args.sac_decision_every),
+                )
+                s_end_xy.append(np.asarray(s_traj[-1], dtype=np.float32))
+                s_min_d.append(float(s_min))
+                if args.save_trajectory_plots and len(s_plot_trajs) < n_plot_rollouts:
+                    s_plot_trajs.append(np.asarray(s_traj, dtype=np.float32))
+            else:
+                # SAC not available; fill with NaN sentinel
+                s_end_xy.append(np.full(2, float("nan"), dtype=np.float32))
+                s_min_d.append(float("nan"))
 
         d_end_xy_np = np.asarray(d_end_xy, dtype=np.float32)
         s_end_xy_np = np.asarray(s_end_xy, dtype=np.float32)
 
         d_succ = float(np.mean(np.asarray(d_min_d) <= float(args.goal_success_threshold)))
         s_succ = float(np.mean(np.asarray(s_min_d) <= float(args.goal_success_threshold)))
+
+        # Aggregate new Diffuser-only metrics over rollouts
+        d_mean_l2_raw = float(np.nanmean(d_mean_l2_raw_list)) if d_mean_l2_raw_list else float("nan")
+        d_clip_frac = float(np.nanmean(d_clip_frac_list)) if d_clip_frac_list else float("nan")
+        _valid_0p1 = [x for x in d_steps_0p1_list if x is not None]
+        _valid_0p2 = [x for x in d_steps_0p2_list if x is not None]
+        d_hit_rate_0p1 = float(len(_valid_0p1)) / len(d_steps_0p1_list) if d_steps_0p1_list else float("nan")
+        d_hit_rate_0p2 = float(len(_valid_0p2)) / len(d_steps_0p2_list) if d_steps_0p2_list else float("nan")
+        d_steps_mean_0p1 = float(np.mean(_valid_0p1)) if _valid_0p1 else float("nan")
+        d_steps_mean_0p2 = float(np.mean(_valid_0p2)) if _valid_0p2 else float("nan")
+
         rows.append(
             {
                 "query_id": int(qid),
@@ -637,6 +769,13 @@ def main() -> None:
                 "sac_rollout_success_rate": s_succ,
                 "diffuser_rollout_min_goal_dist_mean": float(np.mean(d_min_d)),
                 "sac_rollout_min_goal_dist_mean": float(np.mean(s_min_d)),
+                # New Diffuser-only metrics (RANK 2 / F)
+                "diffuser_mean_action_l2_raw": d_mean_l2_raw,
+                "diffuser_clip_fraction": d_clip_frac,
+                "diffuser_hit_rate_0p1": d_hit_rate_0p1,
+                "diffuser_hit_rate_0p2": d_hit_rate_0p2,
+                "diffuser_steps_to_0p1_mean": d_steps_mean_0p1,
+                "diffuser_steps_to_0p2_mean": d_steps_mean_0p2,
             }
         )
         if args.save_trajectory_plots and d_plot_trajs and s_plot_trajs:
@@ -675,22 +814,40 @@ def main() -> None:
             )
 
     d_env.close()
-    s_env.close()
+    if s_env is not None:
+        s_env.close()
 
     df = pd.DataFrame(rows)
     csv_path = out_dir / "collector_stochasticity.csv"
     df.to_csv(csv_path, index=False)
 
+    def _col_mean(col: str) -> float:
+        return float(df[col].mean()) if len(df) and col in df.columns else float("nan")
+
     agg = {
         "queries": int(len(df)),
-        "diffuser_action_std_mean": float(df["diffuser_action_std_mean"].mean()) if len(df) else float("nan"),
-        "sac_action_std_mean": float(df["sac_action_std_mean"].mean()) if len(df) else float("nan"),
-        "diffuser_action_pairwise_l2_mean": float(df["diffuser_action_pairwise_l2_mean"].mean()) if len(df) else float("nan"),
-        "sac_action_pairwise_l2_mean": float(df["sac_action_pairwise_l2_mean"].mean()) if len(df) else float("nan"),
-        "diffuser_rollout_endpoint_pairwise_l2_mean": float(df["diffuser_rollout_endpoint_pairwise_l2_mean"].mean()) if len(df) else float("nan"),
-        "sac_rollout_endpoint_pairwise_l2_mean": float(df["sac_rollout_endpoint_pairwise_l2_mean"].mean()) if len(df) else float("nan"),
-        "diffuser_rollout_success_rate_mean": float(df["diffuser_rollout_success_rate"].mean()) if len(df) else float("nan"),
-        "sac_rollout_success_rate_mean": float(df["sac_rollout_success_rate"].mean()) if len(df) else float("nan"),
+        "diffuser_action_std_mean": _col_mean("diffuser_action_std_mean"),
+        "sac_action_std_mean": _col_mean("sac_action_std_mean"),
+        "diffuser_action_pairwise_l2_mean": _col_mean("diffuser_action_pairwise_l2_mean"),
+        "sac_action_pairwise_l2_mean": _col_mean("sac_action_pairwise_l2_mean"),
+        "diffuser_rollout_endpoint_pairwise_l2_mean": _col_mean("diffuser_rollout_endpoint_pairwise_l2_mean"),
+        "sac_rollout_endpoint_pairwise_l2_mean": _col_mean("sac_rollout_endpoint_pairwise_l2_mean"),
+        "diffuser_rollout_success_rate_mean": _col_mean("diffuser_rollout_success_rate"),
+        "sac_rollout_success_rate_mean": _col_mean("sac_rollout_success_rate"),
+        "diffuser_rollout_min_goal_dist_mean": _col_mean("diffuser_rollout_min_goal_dist_mean"),
+        # New metrics (RANK 2 / F)
+        "diffuser_mean_action_l2_raw": _col_mean("diffuser_mean_action_l2_raw"),
+        "diffuser_clip_fraction": _col_mean("diffuser_clip_fraction"),
+        "diffuser_hit_rate_0p1": _col_mean("diffuser_hit_rate_0p1"),
+        "diffuser_hit_rate_0p2": _col_mean("diffuser_hit_rate_0p2"),
+        "diffuser_steps_to_0p1_mean": _col_mean("diffuser_steps_to_0p1_mean"),
+        "diffuser_steps_to_0p2_mean": _col_mean("diffuser_steps_to_0p2_mean"),
+        # Config echoed for traceability
+        "action_scale_mult": float(args.diffuser_action_scale_mult),
+        "action_ema_beta": float(args.diffuser_action_ema_beta),
+        "adaptive_replan": bool(args.adaptive_replan),
+        "plan_samples": int(args.plan_samples),
+        "plan_score_mode": str(args.plan_score_mode),
     }
 
     summary_path = out_dir / "collector_stochasticity_summary.json"
