@@ -1,5 +1,59 @@
 # EBM Online RL Handoff Log (append-only)
 
+## 2026-02-21T17:00:00+08:00
+<!-- meta: {"type":"bugfix+rerun","commit":"b8bd16b","dirty":true} -->
+
+### Scope
+GPT Pro review identified threshold mismatch: ablation grid used `goal_success_threshold=0.5` while swap matrix and analyzer use `0.2`. Prior "success" numbers were actually success@0.5. Also added symmetric SAC hit-rate metrics.
+
+### Actions
+- `b8bd16b`: Fixed default threshold 0.5→0.2 in `exp_diffuser_ablation_grid.py`; added `sac_hit_rate_0p1/0p2` and `sac_steps_to_0p1/0p2_mean` to analyzer output.
+- Pushed to master+main.
+- Re-launching 12-condition ablation grid with corrected threshold.
+
+### Impact on prior results
+- Prior "success" column was success@0.5, not @0.2. The +11pp gain (0.528→0.639) is success@0.5.
+- At success@0.2 (the `hit_rate_0p2` column), improvement was only +2.8pp (0.444→0.472).
+- Need corrected grid to know real success@0.2 ranking with the matched threshold.
+
+---
+
+## 2026-02-21T16:30:00+08:00
+<!-- meta: {"type":"deep_analysis","artifact":"runs/analysis/ablation_grid/grid_20260221-134801","dirty":true} -->
+
+### Scope
+Deep factorial analysis of ablation grid results (12 conditions, 3×2×2 design). Updated H3 hypothesis to "strongly supported" with ablation evidence. Proposed next experiments.
+
+### Factorial Analysis (3×2×2: alpha × beta × adaptive)
+
+**Main effects** (avg Diffuser success):
+- adaptive_replan: +0.060 (True 0.556 vs False 0.495) — **largest factor**
+- beta (EMA): +0.032 (0.5→0.542 vs 0.0→0.509)
+- alpha: non-monotonic, 1.0 best (0.549), 1.2 worst (0.507)
+
+**Key interaction — beta × adaptive (magnitude 0.083)**:
+- beta=0.0, adapt=F → 0.500; beta=0.0, adapt=T → 0.519 (Δ=+0.019)
+- beta=0.5, adapt=F → 0.491; beta=0.5, adapt=T → **0.593** (Δ=+0.102)
+- Interpretation: EMA smoothing enables effective stall detection for adaptive replanning. Neither factor alone helps; synergy = reducing jitter so adaptive can detect genuine progress stalls.
+
+**Within-condition Diffuser vs SAC gap**:
+- Best condition (α1.0, β0.5, adapt=T): 0.639 vs SAC 0.667 → **2.8pp gap** (was 19.4pp at baseline)
+- Pooled SAC baseline: 0.694 (splits 0.718 for adapt=F vs 0.676 for adapt=T — eval seed noise)
+- Gap reduction: ~85% of baseline gap closed by best execution-time intervention
+
+**SAC seed confound**: SAC success systematically lower in adapt=T condition runs (0.676 vs 0.718). Since SAC ignores adaptive flag, this is evaluation seed variance. Diffuser adaptive benefit may be slightly underestimated.
+
+### H3 update
+- Status promoted from "supported" → **"strongly supported"**
+- New evidence: (a) EMA+adaptive closes gap via control-quality improvements; (b) action scaling (raw magnitude) neutral-to-harmful; (c) strong beta×adaptive synergy = control-responsiveness mechanism
+
+### Proposed next experiments
+1. **Priority A**: Fine-grained beta sweep — beta∈{0.2,0.3,0.5,0.7} × adaptive=True at alpha=1.0, same seed_0 (4 conditions)
+2. **Priority B**: 5-seed swap matrix (blocking Q#1 for paper CI)
+3. **Priority C**: Re-run 3-seed swap matrix with best ablation params baked in (end-to-end gap closure test)
+
+---
+
 ## 2026-02-21T15:35:00+08:00
 <!-- meta: {"type":"experiment_complete","artifact":"runs/analysis/ablation_grid/grid_20260221-134801","dirty":false} -->
 
@@ -1126,3 +1180,75 @@ python3 scripts/exp_swap_matrix_maze2d.py --help
 
 ### Next step
 - 5-seed swap matrix (blocking open Q#1 — paper CI)
+
+## 2026-02-21T16:15:00+08:00
+### Scope
+- Created GPT Pro handoff summary document and zip bundle for experiment review.
+
+### Actions
+- Wrote `GPT_PRO_HANDOFF_2026-02-21.md` (278 lines): comprehensive technical report with all results, scripts, artifacts, and next-experiment commands
+- Committed WORKING_MEMORY.md update to master (`0fcd89d`)
+- Created branch `analysis/results-2026-02-21` with handoff doc (`456e629`); pushed to remote
+- Built `gpt_pro_bundle_20260221.zip` (88KB) containing: handoff doc, WORKING_MEMORY, HANDOFF_LOG, research notes, 5 scripts, 6 result artifacts
+
+### Key artifact
+- Remote branch: https://github.com/MachengShen/EBM_OnlineRL/tree/analysis/results-2026-02-21
+- Bundle: `gpt_pro_bundle_20260221.zip` (in repo root)
+
+
+## 2026-02-21T07:41:43.578Z
+### Objective
+- Capture a handoff snapshot for the completed documentation/memory update cycle in `/root/ebm-online-rl-prototype`.
+- Preserve current repo state and concrete follow-ups for the next agent.
+
+### Changes
+- Updated `HANDOFF_LOG.md` (50 inserted lines).
+- Updated `docs/WORKING_MEMORY.md` (net repo diff: 118 insertions, 25 deletions across 2 files).
+- Left untracked artifacts present: `gpt_pro_bundle_20260221.zip`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`.
+- Task state at handoff: `pending=0`, `running=0`, `done=1`, `failed=0`, `blocked=0`, `canceled=0`.
+
+### Evidence
+- Path/context: `/root/ebm-online-rl-prototype` on branch `master`.
+- Command: `git status --porcelain=v1`
+- Output paths:
+- `HANDOFF_LOG.md` (modified)
+- `docs/WORKING_MEMORY.md` (modified)
+- `gpt_pro_bundle_20260221.zip` (untracked)
+- `gpt_pro_handoff_bundle_20260220.zip` (untracked)
+- `gpt_pro_handoff_bundle_20260220/` (untracked)
+- `memory/` (untracked)
+- Command: `git diff --stat`
+- Output summary:
+- `HANDOFF_LOG.md | 50 +++++++++++++++++++++++++++`
+- `docs/WORKING_MEMORY.md | 93 ++++++++++++++++++++++++++++++++++++--------------`
+- `2 files changed, 118 insertions(+), 25 deletions(-)`
+
+### Next steps
+- Review and commit `HANDOFF_LOG.md` + `docs/WORKING_MEMORY.md` together if content is final.
+- Decide retention policy for bundle artifacts and `memory/` (commit vs ignore vs external storage).
+- Continue the next run from `docs/WORKING_MEMORY.md` and append the subsequent result to `HANDOFF_LOG.md`.
+
+## 2026-02-21T18:30:00+08:00
+### Scope
+- Completed grid_v2 ablation (corrected threshold=0.2). Full factorial analysis performed. H3 evidence revised.
+
+### Evidence
+- Artifact: `runs/analysis/ablation_grid/grid_v2_20260221-171631/ablation_grid_results.csv`
+- 12 conditions: alpha∈{1.0,1.2,1.4} × beta∈{0.0,0.5} × adaptive∈{0,1}
+
+### Key readout (threshold=0.2, corrected)
+- SAC baseline: success@0.2 = 0.646 (range 0.556–0.694)
+- Diffuser baseline (a=1.0,b=0.0,ad=F): success@0.2 = 0.444, SAC gap = 25.0pp
+- Best Diffuser: alpha=1.4, beta=0.5, adapt=True → success@0.2 = 0.500 (+5.6pp, SAC gap = 13.9pp)
+- beta×adaptive interaction at threshold=0.2: ABSENT (magnitude ≈ 0, reversed from grid v1)
+  - beta=0.0/adapt=T: 0.435; beta=0.5/adapt=T: 0.444 — EMA+adaptive is neutral-to-slightly-negative
+- Main effects: alpha=1.4 best (+0.021), beta=0.5 slight help (+0.014), adaptive=F slightly better (+0.014)
+
+### Conclusion
+- Grid v1 "+11pp from EMA+adaptive" was a threshold=0.5 artefact. At threshold=0.2 (correct metric), improvement is only +5.6pp and the interaction synergy disappears.
+- H3 revised from "strongly supported" → "partially supported": consolidation + visual evidence still holds; ablation grid interaction claim retracted.
+- New hypothesis: Diffuser fails at final-meter precision (0.2 threshold) — approaches but oscillates/diverges in last 0.2 units. This is a planner denoising precision issue, not gross control-cadence.
+
+### Next step
+- Priority A (blocking): 5-seed swap matrix for paper CI
+- Priority B (mechanism): visualize near-miss trajectories from best grid_v2 condition to confirm final-meter precision failure hypothesis

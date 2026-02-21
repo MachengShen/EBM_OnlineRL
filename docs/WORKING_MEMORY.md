@@ -1,9 +1,9 @@
 # EBM Online RL Working Memory (living snapshot)
 
-Last updated: 2026-02-21T16:00:00+08:00
+Last updated: 2026-02-21T18:30:00+08:00
 Repo: /root/ebm-online-rl-prototype
 Branch: master
-Commit: 33d2484  (dirty: no)
+Commit: b8bd16b
 GitHub: https://github.com/MachengShen/EBM_OnlineRL/tree/master
 
 ## Objective
@@ -22,14 +22,14 @@ Validate and improve online Maze2D performance by determining whether gains are 
   - Evidence FOR: learner main effect diffuser `0.8819` vs SAC `0.8472` (n=12/learner, h256)
   - Next discriminating test: promote to 5 seeds; run waypoint/diversity diagnostics.
 
-- H3 (strongly supported): SAC collector advantage is control-aware (better goal-directed coverage), not raw action noise.
-  - Status: strongly supported (multi-seed consolidation + visual falsification + ablation grid interaction analysis)
+- H3 (partially supported, revised): SAC collector advantage is control-aware (better goal-directed coverage), not raw action noise.
+  - Status: partially supported — consolidation + visual evidence holds; ablation grid synergy was threshold-artefact
   - Evidence FOR: Diffuser action pairwise L2 > SAC in `11/12` cells; SAC endpoint pairwise L2 > Diffuser in `11/12` cells — `consolidated_overall_summary.json`
   - Evidence FOR: SAC reaches near-goal (`<=0.1`) ~61 steps faster on average where both succeed (seed-0, 4/6 queries) — `visual_check_phase1_seed0_q6_s20_r6_h192/steps_to_goal_threshold_0p1_summary.json`
-  - Evidence FOR (ablation grid): EMA+adaptive closes Diffuser gap from 19pp to **2.8pp within-condition** (best Diffuser 0.639 vs SAC 0.667). These interventions address *control responsiveness*, not action noise — confirming the mechanism is temporal control quality.
-  - Evidence FOR (ablation grid): Action scaling (alpha>1.0, increasing raw magnitude) is neutral-to-harmful (+53% clip fraction at alpha=1.4), disconfirming a raw-magnitude deficit explanation.
-  - Evidence FOR (ablation grid): Strong beta×adaptive interaction (magnitude 0.083) — smoothing alone hurts, adaptive alone neutral, **together** they produce +11pp. This synergy = reducing jitter (EMA) enables earlier re-commitment to better plans (adaptive) — both are control-quality interventions.
-  - Next discriminating test: promote best condition (alpha=1.0, beta=0.5, adaptive=True) to multi-seed swap matrix to confirm gap closure holds end-to-end.
+  - Evidence REVISED (grid v1 vs v2 correction): Grid v1 (threshold=0.5) showed EMA+adaptive synergy of +11pp and best Diffuser 0.639 vs SAC 0.667 (2.8pp gap). Grid v2 (threshold=0.2, corrected) shows NO synergy — beta×adaptive interaction disappears (Δ≈0), best Diffuser 0.500 vs SAC 0.639 (13.9pp gap). The interventions help Diffuser reach within-0.5 of goal but NOT within-0.2.
+  - Evidence FOR (alpha scaling): alpha>1.0 still neutral-to-harmful at threshold=0.2 (alpha=1.4 clips 53%), disconfirming raw-magnitude deficit.
+  - SAC baseline at threshold=0.2: mean 0.646 (range 0.556–0.694).
+  - Next discriminating test: understand WHY EMA+adaptive helps at 0.5 but not 0.2. Hypothesis: smoothing helps gross approach but Diffuser still fails final-meter precision. Test: visualize last-N-step trajectories near goal for best vs baseline condition.
 
 ## Required Environment (minimal, no secrets)
 ```bash
@@ -47,45 +47,84 @@ PYTHON=third_party/diffuser/.venv38/bin/python3.8
 - Notes: 3-seed matrix; promote to 5 seeds for stable confidence intervals
 
 ## Running / Active Jobs
-- None (idle)
+- None currently running.
 
-## Ablation Grid Results (COMPLETE — grid_20260221-134801)
-- 12 conditions: alpha∈{1.0,1.2,1.4} × beta∈{0.0,0.5} × adaptive∈{0,1}, seed_0 diagnostic (6q×6r, h192)
-- SAC baseline (same checkpoint): `success=0.7222`, endpoint_l2=0.4747
-- Diffuser baseline (alpha=1.0, beta=0.0, adapt=False): `success=0.5278`
-- **Best Diffuser**: `alpha=1.0, beta=0.5, adapt=True` → `success=0.6389` (+11pp vs baseline, -8pp vs SAC)
-- Key interaction: **EMA smoothing (beta=0.5) alone does NOT help** (0.5278→0.50); **adaptive alone does NOT help** (0.5278→0.5278); **BOTH together** → +11pp
-- Alpha scaling: neutral to mildly counterproductive; alpha=1.4 causes 53% clip fraction — saturation
-- Artifact: `runs/analysis/ablation_grid/grid_20260221-134801/ablation_grid_results.csv`
+## Ablation Grid Results
 
-Full ranking (success rate):
-| Condition | success | hit@0.1 | clip |
+### Grid v1 (COMPLETE — grid_20260221-134801, threshold=0.5 — HISTORICAL ONLY)
+- **WARNING**: threshold=0.5 was wrong; results not comparable to swap matrix (threshold=0.2)
+- Best Diffuser: alpha=1.0, beta=0.5, adapt=True → success@0.5=0.639 (SAC 0.667, gap 2.8pp)
+- Appeared to show strong EMA+adaptive synergy (+11pp) — artefact of loose threshold
+
+### Grid v2 (COMPLETE — grid_v2_20260221-171631, threshold=0.2 — CANONICAL)
+- Design: 3×2×2 factorial — alpha∈{1.0,1.2,1.4} × beta∈{0.0,0.5} × adaptive∈{0,1}, seed_0 diagnostic (6q×6r, h192)
+- Pooled SAC baseline: `success@0.2=0.646` (range 0.556–0.694 across conditions)
+- Diffuser baseline (alpha=1.0, beta=0.0, adapt=False): `success@0.2=0.444`, SAC gap = 25.0pp
+- **Best Diffuser**: `alpha=1.4, beta=0.5, adapt=True` → `success@0.2=0.500` (+5.6pp vs baseline, SAC gap = **13.9pp**)
+- Artifact: `runs/analysis/ablation_grid/grid_v2_20260221-171631/ablation_grid_results.csv`
+
+### Main effects (avg Diffuser success@0.2)
+| Factor | Level | Avg |
+|--------|-------|-----|
+| alpha | 1.0 | 0.444 |
+| alpha | 1.2 | 0.431 |
+| alpha | **1.4** | **0.465** |
+| beta | 0.0 | 0.440 |
+| beta | **0.5** | **0.454** |
+| adaptive | **False** | **0.454** |
+| adaptive | True | 0.440 |
+
+Note: adaptive=False is now *slightly better* at threshold=0.2 (reversed vs threshold=0.5 finding).
+
+### Key interaction: beta × adaptive (threshold=0.2)
+| | adapt=F | adapt=T | Δ |
 |---|---|---|---|
-| alpha1.0, beta0.5, adapt=True | **0.6389** | 0.33 | 0.04 |
-| alpha1.4, beta0.5, adapt=True | 0.5833 | 0.36 | 0.53 |
-| alpha1.2, beta0.5, adapt=True | 0.5556 | 0.36 | 0.36 |
-| alpha1.0, beta0.0, adapt=False (baseline) | 0.5278 | 0.36 | 0.04 |
-| alpha1.0, beta0.0, adapt=True | 0.5278 | 0.31 | 0.04 |
-| alpha1.2, beta0.0, adapt=True | 0.5278 | 0.31 | 0.36 |
-| alpha1.4, beta0.0/0.5, adapt=* | 0.50 | ~0.30-0.39 | 0.53 |
-| alpha1.2, beta0.0/0.5, adapt=False | 0.4722 | 0.36-0.39 | 0.37 |
+| beta=0.0 | 0.444 | 0.435 | -0.009 |
+| beta=0.5 | 0.463 | 0.444 | -0.019 |
 
-## Next Experiment (runnable)
+**No synergy at threshold=0.2.** The EMA+adaptive interaction seen in grid v1 was a threshold=0.5 artefact.
+
+### Full ranking (success@0.2)
+| Condition | D_succ | SAC_succ | gap | D_hit@0.2 | SAC_hit@0.2 | clip |
+|---|---|---|---|---|---|---|
+| alpha=1.4, beta=0.5, adapt=T | **0.500** | 0.639 | 13.9pp | 0.500 | 0.639 | 0.534 |
+| alpha=1.0, beta=0.0, adapt=T | 0.472 | 0.611 | 13.9pp | 0.472 | 0.611 | 0.034 |
+| alpha=1.0, beta=0.5, adapt=F | 0.472 | 0.694 | 22.2pp | 0.472 | 0.694 | 0.037 |
+| alpha=1.4, beta=0.5, adapt=F | 0.472 | 0.667 | 19.4pp | 0.472 | 0.667 | 0.538 |
+| alpha=1.2, beta=0.5, adapt=T | 0.444 | 0.556 | 11.1pp | 0.444 | 0.556 | 0.365 |
+| alpha=1.0, beta=0.0, adapt=F (baseline) | 0.444 | 0.694 | 25.0pp | 0.444 | 0.694 | 0.037 |
+| alpha=1.2, beta=0.0, adapt=F | 0.444 | 0.694 | 25.0pp | 0.444 | 0.694 | 0.368 |
+| alpha=1.2, beta=0.5, adapt=F | 0.444 | 0.583 | 13.9pp | 0.444 | 0.583 | 0.371 |
+| alpha=1.4, beta=0.0, adapt=F | 0.444 | 0.667 | 22.2pp | 0.444 | 0.667 | 0.537 |
+| alpha=1.4, beta=0.0, adapt=T | 0.444 | 0.694 | 25.0pp | 0.444 | 0.694 | 0.529 |
+| alpha=1.2, beta=0.0, adapt=T | 0.389 | 0.611 | 22.2pp | 0.389 | 0.611 | 0.361 |
+| alpha=1.0, beta=0.5, adapt=T | 0.389 | 0.639 | 25.0pp | 0.389 | 0.639 | 0.036 |
+
+### Key interpretation
+- Execution-time interventions (EMA, adaptive replan) help at coarse threshold (0.5) but **do not transfer to precise goal-reaching (0.2)**.
+- SAC gap at threshold=0.2 remains ~14–25pp; EMA+adaptive only recovered ~5.6pp (not the previously claimed 11pp).
+- New hypothesis: Diffuser fails at final-meter precision. The model may approach the goal but oscillates or diverges in the last 0.2 units. This is a planner objective / denoising precision issue, not a gross control-cadence issue.
+
+## Next Experiment — Priority A (blocking — paper CI)
 ```bash
-# Intent: promote swap matrix from 3→5 seeds to strengthen H2 confidence intervals (blocking open Q#1)
+# Intent: promote swap matrix from 3→5 seeds to strengthen H2 confidence intervals
 D4RL_SUPPRESS_IMPORT_ERROR=1 MUJOCO_GL=egl \
   LD_LIBRARY_PATH=/tmp/mujoco_compat:/root/.mujoco/mujoco210/bin:$LD_LIBRARY_PATH \
+  PYTHONPATH=third_party/diffuser-maze2d \
   third_party/diffuser/.venv38/bin/python3.8 scripts/exp_swap_matrix_maze2d.py \
   --seeds 0 1 2 3 4 --collectors diffuser sac_her_sparse \
   --learners diffuser sac_her_sparse --modes warmstart frozen \
-  --device cuda:0 --base-dir runs/analysis/swap_matrix/5seed_$(date +%Y%m%d-%H%M%S)
+  --device cuda:0 --base-dir runs/analysis/swap_matrix/5seed_$(date +%Y%m%d-%H%M%S) \
+  2>&1 | tee runs/analysis/swap_matrix/5seed_latest.log
 ```
 
-## Secondary Experiment (after 5-seed matrix)
+## Next Experiment — Priority B (mechanism understanding)
 ```bash
-# Intent: bake best ablation params (beta=0.5, adaptive=True) into swap matrix and re-run 3-seed
-# to test whether EMA+adaptive closes the collector gap end-to-end (not just on diagnostic seed_0)
-# Command TBD after 5-seed matrix completes
+# Intent: visualize last-N-step trajectories for best (alpha=1.4,beta=0.5,adapt=T) vs baseline
+# to understand why EMA+adaptive helps at 0.5 but not 0.2 (final-meter precision hypothesis)
+# Use existing visual_check infra: add --out-last-n-steps flag or post-process trajectory NPZ
+# (no new script needed — read alpha1.40_beta0.50_adapt1_K1/collector_stochasticity_summary.json
+#  and cross-check trajectories for near-miss (0.2–0.5 band) vs success (<=0.2))
 ```
 
 ## Open Questions (ranked by blocking priority)
@@ -230,3 +269,36 @@ Pre-migration WM backup: `memory/archive/WORKING_MEMORY_pre_migration_20260220.m
 - Confirm the exact `relay-long-task-callback` command/interface expected in this repo.
 - Confirm whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` should be recreated in this validation cycle.
 - Continue remaining plan tail: run smoke verification, harden aggregation/experiment scripts, execute mini end-to-end callback pipeline, fix any schema/analysis mismatches, then launch full validation runs with ongoing `docs/WORKING_MEMORY.md` and `HANDOFF_LOG.md` updates.
+
+
+## 2026-02-21T07:41:43.578Z
+### Objective
+- Capture a handoff snapshot for the completed documentation/memory update cycle in `/root/ebm-online-rl-prototype`.
+- Preserve current repo state and concrete follow-ups for the next agent.
+
+### Changes
+- Updated `HANDOFF_LOG.md` (50 inserted lines).
+- Updated `docs/WORKING_MEMORY.md` (net repo diff: 118 insertions, 25 deletions across 2 files).
+- Left untracked artifacts present: `gpt_pro_bundle_20260221.zip`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`.
+- Task state at handoff: `pending=0`, `running=0`, `done=1`, `failed=0`, `blocked=0`, `canceled=0`.
+
+### Evidence
+- Path/context: `/root/ebm-online-rl-prototype` on branch `master`.
+- Command: `git status --porcelain=v1`
+- Output paths:
+- `HANDOFF_LOG.md` (modified)
+- `docs/WORKING_MEMORY.md` (modified)
+- `gpt_pro_bundle_20260221.zip` (untracked)
+- `gpt_pro_handoff_bundle_20260220.zip` (untracked)
+- `gpt_pro_handoff_bundle_20260220/` (untracked)
+- `memory/` (untracked)
+- Command: `git diff --stat`
+- Output summary:
+- `HANDOFF_LOG.md | 50 +++++++++++++++++++++++++++`
+- `docs/WORKING_MEMORY.md | 93 ++++++++++++++++++++++++++++++++++++--------------`
+- `2 files changed, 118 insertions(+), 25 deletions(-)`
+
+### Next steps
+- Review and commit `HANDOFF_LOG.md` + `docs/WORKING_MEMORY.md` together if content is final.
+- Decide retention policy for bundle artifacts and `memory/` (commit vs ignore vs external storage).
+- Continue the next run from `docs/WORKING_MEMORY.md` and append the subsequent result to `HANDOFF_LOG.md`.
