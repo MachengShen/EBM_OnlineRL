@@ -1126,3 +1126,87 @@ python3 scripts/exp_swap_matrix_maze2d.py --help
 
 ### Next step
 - 5-seed swap matrix (blocking open Q#1 — paper CI)
+
+## 2026-02-22T18:00:00+08:00
+<!-- meta: {"type":"implementation","branch":"feature/eqnet-maze2d","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Implemented EqNet denoiser integration for Maze2D Diffuser in an isolated worktree and validated end-to-end with a UNet-vs-EqNet smoke run.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+- Branch: feature/eqnet-maze2d
+- Commit base: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H4: Replacing TemporalUnet with EqNet can be integrated into the existing online Diffuser loop without changing the rest of the pipeline semantics.
+
+### Exact command(s) run
+```bash
+# Worktree setup + baseline checks
+python3 -m py_compile scripts/synthetic_maze2d_diffuser_probe.py scripts/exp_swap_matrix_maze2d.py
+
+# EqNet adapter sanity (forward/backward)
+/root/ebm-online-rl-prototype/third_party/diffuser/.venv38/bin/python3 - <<'PY'
+import torch
+from scripts.eqnet_adapter import EqNetAdapter
+m = EqNetAdapter(horizon=64, transition_dim=6, cond_dim=4, emb_dim=32, model_dim=32, n_layers=2, kernel_size=3, kernel_expansion_rate=2)
+x = torch.randn(4,64,6,requires_grad=True)
+out = m(x, {0: torch.zeros(4,4)}, torch.randint(0,16,(4,)))
+loss = (out**2).mean(); loss.backward()
+print(tuple(out.shape), float(loss), bool(torch.isfinite(out).all() and torch.isfinite(x.grad).all()))
+PY
+
+# End-to-end smoke ablation (2 conditions x 1 seed)
+bash scripts/ablation_maze2d_eqnet_vs_unet.sh --smoke --seeds 0
+
+# Re-run analyzer after step-column compatibility fix
+python3 scripts/analyze_ablation_eqnet_vs_unet.py --base-dir runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551
+```
+
+### Changed
+- Added:
+  - `scripts/eqnet_adapter.py`
+  - `scripts/ablation_maze2d_eqnet_vs_unet.sh`
+  - `scripts/analyze_ablation_eqnet_vs_unet.py`
+  - `docs/eqnet_maze2d_ablation_summary.md`
+- Updated:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+    - `--denoiser_arch {unet,eqnet}`
+    - EqNet knobs (`--eqnet_*`)
+    - EqNet model wiring + denoiser parameter reporting
+  - `scripts/exp_swap_matrix_maze2d.py`
+    - Diffuser EqNet passthrough args (`--diffuser-denoiser-arch`, `--eqnet-*`)
+    - moved `wall_aware_planning`/`wall_aware_plan_samples` into `diffuser_only` for SAC arg compatibility
+
+### Output artifacts
+- Smoke run root:
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/`
+- Run-level artifacts:
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/unet/seed_0/summary.json`
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/eqnet/seed_0/summary.json`
+- Aggregate artifacts:
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/eqnet_vs_unet_rows.csv`
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/eqnet_vs_unet_summary.json`
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/eqnet_vs_unet_summary.md`
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/eqnet_vs_unet_success_curve.png`
+
+### Results (observed)
+- Smoke (n=1 seed per condition, h32):
+  - success_final: unet `0.000`, eqnet `0.000`
+  - min_goal_dist_final: unet `1.4382`, eqnet `1.5076`
+  - final_goal_dist_final: unet `1.5255`, eqnet `1.6094`
+  - rollout wall-hits mean: unet `0.0`, eqnet `0.0`
+  - denoiser_trainable_params: unet `248,198`, eqnet `1,607,880`
+
+### Interpretation
+- EqNet integration is operational through training, planning, online collection, replay refresh, and metrics export.
+- This smoke run validates infrastructure only; it is too small for performance conclusions.
+
+### Decision
+- Keep the EqNet integration in the feature branch/worktree and move to 3-seed matched-budget umaze ablation.
+
+### Next step (runnable)
+```bash
+bash scripts/ablation_maze2d_eqnet_vs_unet.sh --env maze2d-umaze-v1 --seeds 0,1,2 --device cuda:0
+```

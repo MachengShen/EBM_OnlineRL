@@ -25,6 +25,7 @@ from diffuser.models.diffusion import GaussianDiffusion
 from diffuser.models.temporal import TemporalUnet
 from diffuser.utils.arrays import batch_to_device
 from diffuser.utils.training import EMA
+from eqnet_adapter import EqNetAdapter
 
 
 def safe_reset(env: gym.Env, seed: int | None = None) -> np.ndarray:
@@ -192,6 +193,14 @@ class Config:
     n_diffusion_steps: int = 64
     model_dim: int = 64
     model_dim_mults: str = "1,2,4"
+    denoiser_arch: str = "unet"  # {"unet","eqnet"}
+    eqnet_emb_dim: int = 32
+    eqnet_model_dim: int = 32
+    eqnet_use_timestep_emb: bool = True
+    eqnet_n_layers: int = 25
+    eqnet_kernel_size: int = 3
+    eqnet_kernel_expansion_rate: int = 5
+    eqnet_encode_position: bool = False
     learning_rate: float = 2e-4
     train_steps: int = 4000
     batch_size: int = 128
@@ -336,6 +345,48 @@ def parse_args() -> Config:
     parser.add_argument("--n_diffusion_steps", type=int, default=Config.n_diffusion_steps)
     parser.add_argument("--model_dim", type=int, default=Config.model_dim)
     parser.add_argument("--model_dim_mults", type=str, default=Config.model_dim_mults)
+    parser.add_argument(
+        "--denoiser_arch",
+        type=str,
+        default=Config.denoiser_arch,
+        choices=["unet", "eqnet"],
+        help="Denoiser backbone for GaussianDiffusion.",
+    )
+    parser.add_argument("--eqnet_emb_dim", type=int, default=Config.eqnet_emb_dim)
+    parser.add_argument("--eqnet_model_dim", type=int, default=Config.eqnet_model_dim)
+    parser.add_argument(
+        "--eqnet_use_timestep_emb",
+        dest="eqnet_use_timestep_emb",
+        action="store_true",
+        help="Enable timestep embedding in EqNet.",
+    )
+    parser.add_argument(
+        "--no_eqnet_use_timestep_emb",
+        dest="eqnet_use_timestep_emb",
+        action="store_false",
+        help="Disable timestep embedding in EqNet.",
+    )
+    parser.set_defaults(eqnet_use_timestep_emb=Config.eqnet_use_timestep_emb)
+    parser.add_argument("--eqnet_n_layers", type=int, default=Config.eqnet_n_layers)
+    parser.add_argument("--eqnet_kernel_size", type=int, default=Config.eqnet_kernel_size)
+    parser.add_argument(
+        "--eqnet_kernel_expansion_rate",
+        type=int,
+        default=Config.eqnet_kernel_expansion_rate,
+    )
+    parser.add_argument(
+        "--eqnet_encode_position",
+        dest="eqnet_encode_position",
+        action="store_true",
+        help="Enable EqNet positional encoding injection (breaks strict shift equivariance).",
+    )
+    parser.add_argument(
+        "--no_eqnet_encode_position",
+        dest="eqnet_encode_position",
+        action="store_false",
+        help="Disable EqNet positional encoding injection.",
+    )
+    parser.set_defaults(eqnet_encode_position=Config.eqnet_encode_position)
     parser.add_argument("--learning_rate", type=float, default=Config.learning_rate)
     parser.add_argument("--train_steps", type=int, default=Config.train_steps)
     parser.add_argument("--batch_size", type=int, default=Config.batch_size)
@@ -2412,6 +2463,29 @@ def main() -> None:
         raise ValueError("--eval_waypoint_eps must be > 0")
     if cfg.eval_waypoint_mode not in {"none", "feasible", "infeasible"}:
         raise ValueError("--eval_waypoint_mode must be one of: none, feasible, infeasible")
+    if cfg.denoiser_arch not in {"unet", "eqnet"}:
+        raise ValueError("--denoiser_arch must be one of: unet, eqnet")
+    if cfg.eqnet_emb_dim <= 0:
+        raise ValueError("--eqnet_emb_dim must be > 0")
+    if cfg.eqnet_model_dim <= 0:
+        raise ValueError("--eqnet_model_dim must be > 0")
+    if cfg.eqnet_n_layers < 0:
+        raise ValueError("--eqnet_n_layers must be >= 0")
+    if cfg.eqnet_kernel_size <= 0 or (cfg.eqnet_kernel_size % 2) == 0:
+        raise ValueError("--eqnet_kernel_size must be a positive odd integer")
+    if cfg.eqnet_kernel_expansion_rate <= 0:
+        raise ValueError("--eqnet_kernel_expansion_rate must be > 0")
+    if cfg.denoiser_arch == "eqnet":
+        if cfg.eqnet_model_dim != cfg.eqnet_emb_dim:
+            raise ValueError(
+                "--eqnet_model_dim must equal --eqnet_emb_dim in the current EqNet adapter "
+                f"(model_dim={cfg.eqnet_model_dim}, emb_dim={cfg.eqnet_emb_dim})"
+            )
+        if cfg.horizon <= 0 or (cfg.horizon & (cfg.horizon - 1)) != 0:
+            raise ValueError(
+                f"EqNet requires power-of-two --horizon, got {cfg.horizon}. "
+                "Use horizon in {32, 64, 128, ...}."
+            )
 
     online_min_accepted_episode_len = int(cfg.online_min_accepted_episode_len) if int(cfg.online_min_accepted_episode_len) > 0 else int(cfg.horizon)
     if online_min_accepted_episode_len <= 0:
@@ -2549,13 +2623,30 @@ def main() -> None:
     print(f"[data] samples total={len(dataset)} train={initial_train_samples} val={initial_val_samples}")
 
     dim_mults = parse_dim_mults(cfg.model_dim_mults)
-    model = TemporalUnet(
-        horizon=cfg.horizon,
-        transition_dim=dataset.observation_dim + dataset.action_dim,
-        cond_dim=dataset.observation_dim,
-        dim=cfg.model_dim,
-        dim_mults=dim_mults,
-    ).to(device)
+    transition_dim = dataset.observation_dim + dataset.action_dim
+    if cfg.denoiser_arch == "unet":
+        model = TemporalUnet(
+            horizon=cfg.horizon,
+            transition_dim=transition_dim,
+            cond_dim=dataset.observation_dim,
+            dim=cfg.model_dim,
+            dim_mults=dim_mults,
+        ).to(device)
+    else:
+        model = EqNetAdapter(
+            horizon=cfg.horizon,
+            transition_dim=transition_dim,
+            cond_dim=dataset.observation_dim,
+            emb_dim=cfg.eqnet_emb_dim,
+            model_dim=cfg.eqnet_model_dim,
+            use_timestep_emb=cfg.eqnet_use_timestep_emb,
+            n_layers=cfg.eqnet_n_layers,
+            kernel_size=cfg.eqnet_kernel_size,
+            kernel_expansion_rate=cfg.eqnet_kernel_expansion_rate,
+            encode_position=cfg.eqnet_encode_position,
+        ).to(device)
+    denoiser_trainable_params = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    print(f"[model] denoiser_arch={cfg.denoiser_arch} trainable_params={denoiser_trainable_params}")
 
     diffusion = GaussianDiffusion(
         model=model,
@@ -3145,6 +3236,17 @@ def main() -> None:
         "eval_rollout_replan_every_n_steps": int(cfg.eval_rollout_replan_every_n_steps),
         "eval_rollout_horizon": int(cfg.eval_rollout_horizon),
         "eval_success_prefix_horizons": [int(h) for h in eval_success_prefix_horizons],
+        "denoiser_arch": str(cfg.denoiser_arch),
+        "denoiser_trainable_params": int(denoiser_trainable_params),
+        "eqnet_config": {
+            "emb_dim": int(cfg.eqnet_emb_dim),
+            "model_dim": int(cfg.eqnet_model_dim),
+            "use_timestep_emb": bool(cfg.eqnet_use_timestep_emb),
+            "n_layers": int(cfg.eqnet_n_layers),
+            "kernel_size": int(cfg.eqnet_kernel_size),
+            "kernel_expansion_rate": int(cfg.eqnet_kernel_expansion_rate),
+            "encode_position": bool(cfg.eqnet_encode_position),
+        },
         "eval_waypoint_mode": str(cfg.eval_waypoint_mode),
         "eval_waypoint_t": int(cfg.eval_waypoint_t),
         "eval_waypoint_eps": float(cfg.eval_waypoint_eps),

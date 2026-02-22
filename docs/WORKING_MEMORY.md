@@ -1,9 +1,9 @@
 # EBM Online RL Working Memory (living snapshot)
 
-Last updated: 2026-02-21T16:00:00+08:00
+Last updated: 2026-02-22T18:00:00+08:00
 Repo: /root/ebm-online-rl-prototype
-Branch: master
-Commit: 33d2484  (dirty: no)
+Branch: feature/eqnet-maze2d
+Commit: 328ac6e  (dirty: yes)
 GitHub: https://github.com/MachengShen/EBM_OnlineRL/tree/master
 
 ## Objective
@@ -94,6 +94,38 @@ D4RL_SUPPRESS_IMPORT_ERROR=1 MUJOCO_GL=egl \
 3. Is `eval_samples_per_query>1` needed to decouple query-coverage from single-trajectory success? — blocking: no — resolves with: re-run stochasticity diagnostics with `--eval_samples_per_query 4+`
 4. What concrete Diffuser modification targets the endpoint-diversity gap? — blocking: no — resolves with: mechanism analysis post-ablation
 5. How much of Diffuser collector quality depended on privileged multi-candidate selection defaults? — blocking: no — resolves with: 1-seed and 3-seed reruns under non-privileged defaults vs old defaults
+
+## EqNet Branch Status (2026-02-22)
+- Scope:
+  - Implemented EqNet denoiser integration in isolated worktree branch `feature/eqnet-maze2d`.
+- Code changes:
+  - Added: `scripts/eqnet_adapter.py`
+  - Updated: `scripts/synthetic_maze2d_diffuser_probe.py`
+    - new `--denoiser_arch {unet,eqnet}`
+    - EqNet config flags (`--eqnet_*`)
+    - adapter wiring + denoiser parameter logging in summary
+  - Updated: `scripts/exp_swap_matrix_maze2d.py`
+    - added Diffuser EqNet passthrough args (`--diffuser-denoiser-arch`, `--eqnet-*`)
+    - pinned `wall_aware_planning`/`wall_aware_plan_samples` under `diffuser_only` (SAC arg-compat fix)
+  - Added: `scripts/ablation_maze2d_eqnet_vs_unet.sh`
+  - Added: `scripts/analyze_ablation_eqnet_vs_unet.py`
+  - Added: `docs/eqnet_maze2d_ablation_summary.md`
+- Smoke evidence (`unet` vs `eqnet`, seed 0):
+  - Run root: `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_20260222-174551/`
+  - Output: `eqnet_vs_unet_rows.csv`, `eqnet_vs_unet_summary.json`, `eqnet_vs_unet_summary.md`, `eqnet_vs_unet_success_curve.png`
+  - h32 readout:
+    - success_final: `unet=0.000`, `eqnet=0.000`
+    - min_goal_dist_final: `unet=1.4382`, `eqnet=1.5076` (EqNet +0.0694)
+    - final_goal_dist_final: `unet=1.5255`, `eqnet=1.6094` (EqNet +0.0839)
+    - rollout wall hits mean: `unet=0.0`, `eqnet=0.0`
+    - denoiser params: `unet=248,198`, `eqnet=1,607,880`
+- Interpretation:
+  - Integration is functionally validated end-to-end.
+  - This smoke run is not sufficient for efficacy claims.
+- Next step:
+```bash
+bash scripts/ablation_maze2d_eqnet_vs_unet.sh --env maze2d-umaze-v1 --seeds 0,1,2 --device cuda:0
+```
 
 ## Key Artifact Pointers
 - LAST_FULL_RUN_PATH: `runs/analysis/swap_matrix/LAST_FULL_RUN_PATH.txt` → `runs/analysis/swap_matrix/swap_matrix_20260219-231605/`

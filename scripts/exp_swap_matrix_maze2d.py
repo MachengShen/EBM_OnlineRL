@@ -252,6 +252,44 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--no-resume", dest="resume", action="store_false")
     ap.add_argument("--env", type=str, default="maze2d-umaze-v1",
                     help="D4RL maze env name (maze2d-umaze-v1, maze2d-medium-v1, maze2d-large-v1)")
+    ap.add_argument(
+        "--diffuser-denoiser-arch",
+        type=str,
+        default="unet",
+        choices=["unet", "eqnet"],
+        help="Denoiser architecture used by Diffuser runs.",
+    )
+    ap.add_argument("--eqnet-emb-dim", type=int, default=32)
+    ap.add_argument("--eqnet-model-dim", type=int, default=32)
+    ap.add_argument("--eqnet-n-layers", type=int, default=25)
+    ap.add_argument("--eqnet-kernel-size", type=int, default=3)
+    ap.add_argument("--eqnet-kernel-expansion-rate", type=int, default=5)
+    ap.add_argument(
+        "--eqnet-use-timestep-emb",
+        dest="eqnet_use_timestep_emb",
+        action="store_true",
+        help="Enable timestep embedding in EqNet.",
+    )
+    ap.add_argument(
+        "--no-eqnet-use-timestep-emb",
+        dest="eqnet_use_timestep_emb",
+        action="store_false",
+        help="Disable timestep embedding in EqNet.",
+    )
+    ap.set_defaults(eqnet_use_timestep_emb=True)
+    ap.add_argument(
+        "--eqnet-encode-position",
+        dest="eqnet_encode_position",
+        action="store_true",
+        help="Enable EqNet positional encoding injection.",
+    )
+    ap.add_argument(
+        "--no-eqnet-encode-position",
+        dest="eqnet_encode_position",
+        action="store_false",
+        help="Disable EqNet positional encoding injection.",
+    )
+    ap.set_defaults(eqnet_encode_position=False)
     ap.add_argument("--smoke", action="store_true", help="Tiny fast run for pipeline validation.")
     return ap.parse_args()
 
@@ -313,9 +351,6 @@ def main() -> int:
         "goal_success_threshold": 0.2,
         "eval_rollout_horizon": 32 if args.smoke else 256,
         "eval_rollout_replan_every_n_steps": 4 if args.smoke else 16,
-        # Avoid privileged maze-layout-aware candidate selection in default comparisons.
-        "wall_aware_planning": False,
-        "wall_aware_plan_samples": 1,
         "eval_success_prefix_horizons": ",".join(str(x) for x in prefixes),
         "save_checkpoint_every": 0 if args.smoke else 5000,
     }
@@ -323,6 +358,18 @@ def main() -> int:
         "n_diffusion_steps": 16 if args.smoke else 64,
         "model_dim": 32 if args.smoke else 64,
         "model_dim_mults": "1,2" if args.smoke else "1,2,4",
+        "denoiser_arch": str(args.diffuser_denoiser_arch),
+        "eqnet_emb_dim": int(args.eqnet_emb_dim),
+        "eqnet_model_dim": int(args.eqnet_model_dim),
+        "eqnet_n_layers": int(args.eqnet_n_layers),
+        "eqnet_kernel_size": int(args.eqnet_kernel_size),
+        "eqnet_kernel_expansion_rate": int(args.eqnet_kernel_expansion_rate),
+        "eqnet_use_timestep_emb": bool(args.eqnet_use_timestep_emb),
+        "eqnet_encode_position": bool(args.eqnet_encode_position),
+        # Avoid privileged maze-layout-aware candidate selection in default comparisons.
+        # These args exist only in the Diffuser probe script.
+        "wall_aware_planning": False,
+        "wall_aware_plan_samples": 1,
     }
 
     env = _base_env(root)
