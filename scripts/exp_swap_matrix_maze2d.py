@@ -250,6 +250,8 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--timeout-min", type=float, default=720.0)
     ap.add_argument("--resume", action="store_true", default=True)
     ap.add_argument("--no-resume", dest="resume", action="store_false")
+    ap.add_argument("--env", type=str, default="maze2d-umaze-v1",
+                    help="D4RL maze env name (maze2d-umaze-v1, maze2d-medium-v1, maze2d-large-v1)")
     ap.add_argument("--smoke", action="store_true", help="Tiny fast run for pipeline validation.")
     return ap.parse_args()
 
@@ -282,7 +284,7 @@ def main() -> int:
     prefixes = (8, 16, 32) if args.smoke else (64, 128, 192, 256)
 
     common: Dict[str, Any] = {
-        "env": "maze2d-umaze-v1",
+        "env": args.env,
         "device": "cpu" if args.smoke else args.device,
         "n_episodes": 4 if args.smoke else 400,
         "episode_len": 32 if args.smoke else 256,

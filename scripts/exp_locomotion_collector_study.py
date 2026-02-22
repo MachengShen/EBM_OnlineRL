@@ -36,7 +36,8 @@ import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
+import copy
 
 import numpy as np
 import torch
@@ -470,6 +471,317 @@ def evaluate_gcbc(
 
 
 # ---------------------------------------------------------------------------
+# Online Diffuser training utilities
+# ---------------------------------------------------------------------------
+
+import diffuser.models.temporal as _temporal_mod   # noqa: E402
+import diffuser.models.diffusion as _diffusion_mod  # noqa: E402
+from diffuser.utils.training import EMA             # noqa: E402
+from diffuser.datasets.normalization import DatasetNormalizer, LimitsNormalizer  # noqa: E402
+
+
+def _env_dims(env_name: str) -> Tuple[int, int]:
+    """Return (obs_dim, action_dim) for a gym env without keeping it open."""
+    e = gym.make(env_name)
+    obs_dim = e.observation_space.shape[0]
+    act_dim = e.action_space.shape[0]
+    e.close()
+    return obs_dim, act_dim
+
+
+def build_diffuser_from_scratch(
+    obs_dim: int,
+    action_dim: int,
+    device: str,
+    horizon: int = 32,
+    n_diffusion_steps: int = 20,
+    dim_mults: Tuple[int, ...] = (1, 2, 4, 8),
+) -> Tuple[Any, Any, Any, torch.optim.Optimizer]:
+    """
+    Construct a randomly initialized Diffuser model for locomotion.
+
+    Returns (diffusion_model, ema_model, ema_helper, optimizer).
+    """
+    transition_dim = obs_dim + action_dim
+    model = _temporal_mod.TemporalUnet(
+        horizon=horizon,
+        transition_dim=transition_dim,
+        cond_dim=obs_dim,
+        dim_mults=dim_mults,
+        attention=False,
+    ).to(device)
+
+    diffusion = _diffusion_mod.GaussianDiffusion(
+        model=model,
+        horizon=horizon,
+        observation_dim=obs_dim,
+        action_dim=action_dim,
+        n_timesteps=n_diffusion_steps,
+        loss_type="l2",
+        clip_denoised=False,
+        predict_epsilon=False,
+        action_weight=10,
+        loss_discount=1,
+        loss_weights=None,
+    ).to(device)
+
+    ema_model = copy.deepcopy(diffusion)
+    ema_helper = EMA(0.995)
+    optimizer = torch.optim.Adam(diffusion.parameters(), lr=2e-4)
+
+    return diffusion, ema_model, ema_helper, optimizer
+
+
+def episodes_to_sequence_dataset(
+    obs_list: List[np.ndarray],
+    act_list: List[np.ndarray],
+    obs_dim: int,
+    action_dim: int,
+    horizon: int = 32,
+    max_path_length: int = 1000,
+) -> torch.utils.data.Dataset:
+    """
+    Convert collected episodes to a Dataset yielding (trajectories, conditions)
+    batches compatible with GaussianDiffusion.loss().
+
+    Each episode is segmented into overlapping windows of length `horizon`.
+    Normalization uses per-dim min/max from the collected data.
+    """
+    # Build per-episode arrays padded to max_path_length
+    n_episodes = len(obs_list)
+    observations = np.zeros((n_episodes, max_path_length, obs_dim), dtype=np.float32)
+    actions = np.zeros((n_episodes, max_path_length, action_dim), dtype=np.float32)
+    path_lengths = np.zeros(n_episodes, dtype=np.int64)
+
+    for i in range(n_episodes):
+        L = min(len(obs_list[i]), max_path_length)
+        observations[i, :L] = obs_list[i][:L]
+        actions[i, :L] = act_list[i][:L]
+        path_lengths[i] = L
+
+    # Compute normalizer from all real data
+    all_obs = np.concatenate([observations[i, :path_lengths[i]] for i in range(n_episodes)], axis=0)
+    all_act = np.concatenate([actions[i, :path_lengths[i]] for i in range(n_episodes)], axis=0)
+
+    obs_min = all_obs.min(axis=0)
+    obs_max = all_obs.max(axis=0)
+    act_min = all_act.min(axis=0)
+    act_max = all_act.max(axis=0)
+
+    # Avoid division by zero
+    obs_range = np.maximum(obs_max - obs_min, 1e-6)
+    act_range = np.maximum(act_max - act_min, 1e-6)
+
+    # Normalize to [-1, 1]
+    normed_obs = np.zeros_like(observations)
+    normed_act = np.zeros_like(actions)
+    for i in range(n_episodes):
+        L = path_lengths[i]
+        normed_obs[i, :L] = 2.0 * (observations[i, :L] - obs_min) / obs_range - 1.0
+        normed_act[i, :L] = 2.0 * (actions[i, :L] - act_min) / act_range - 1.0
+
+    # Build indices: (episode_idx, start, end) for trajectory windows
+    # Use padding=True semantics: allow windows that extend past episode end
+    # (padding is zeros, which is already the default in our arrays)
+    indices = []
+    for i in range(n_episodes):
+        L = path_lengths[i]
+        if L < 2:
+            continue
+        # Allow windows starting up to L-1 (the array is zero-padded beyond L)
+        max_start = min(L - 1, max_path_length - horizon)
+        for start in range(max(max_start, 1)):
+            indices.append((i, start, start + horizon))
+
+    indices = np.array(indices, dtype=np.int64)
+
+    class _LocoSeqDataset(torch.utils.data.Dataset):
+        """Lightweight dataset matching Diffuser Batch format."""
+        def __init__(self):
+            self.indices = indices
+            self.normed_obs = normed_obs
+            self.normed_act = normed_act
+            self.normalizer_info = {
+                "obs_min": obs_min, "obs_max": obs_max,
+                "act_min": act_min, "act_max": act_max,
+            }
+
+        def __len__(self):
+            return len(self.indices)
+
+        def __getitem__(self, idx):
+            ep, start, end = self.indices[idx]
+            obs_chunk = self.normed_obs[ep, start:end]   # (H, obs_dim)
+            act_chunk = self.normed_act[ep, start:end]   # (H, action_dim)
+            # Diffuser format: trajectories = [actions, observations] concatenated
+            trajectories = np.concatenate([act_chunk, obs_chunk], axis=-1)  # (H, action_dim+obs_dim)
+            conditions = {0: obs_chunk[0]}  # condition on first observation
+            return trajectories, conditions
+
+    return _LocoSeqDataset()
+
+
+class _LocoNormalizer:
+    """Minimal normalizer for Diffuser policy inference with online-collected data."""
+    def __init__(self, obs_min, obs_max, act_min, act_max):
+        self.obs_min = obs_min.astype(np.float32)
+        self.obs_max = obs_max.astype(np.float32)
+        self.act_min = act_min.astype(np.float32)
+        self.act_max = act_max.astype(np.float32)
+        self.obs_range = np.maximum(self.obs_max - self.obs_min, 1e-6)
+        self.act_range = np.maximum(self.act_max - self.act_min, 1e-6)
+
+    def normalize(self, x, key):
+        if key == "observations":
+            return 2.0 * (x - self.obs_min) / self.obs_range - 1.0
+        elif key == "actions":
+            return 2.0 * (x - self.act_min) / self.act_range - 1.0
+        return x
+
+    def unnormalize(self, x, key):
+        if key == "observations":
+            return (x + 1.0) / 2.0 * self.obs_range + self.obs_min
+        elif key == "actions":
+            return (x + 1.0) / 2.0 * self.act_range + self.act_min
+        return x
+
+
+def train_diffuser_steps(
+    diffusion: Any,
+    ema_model: Any,
+    ema_helper: EMA,
+    optimizer: torch.optim.Optimizer,
+    dataloader: torch.utils.data.DataLoader,
+    n_steps: int,
+    device: str,
+    grad_clip: float = 1.0,
+    ema_update_every: int = 10,
+) -> float:
+    """Run n_steps of diffusion training. Returns mean loss."""
+    from itertools import cycle as _cycle
+    train_iter = _cycle(dataloader)
+    losses = []
+    diffusion.train()
+    for step in range(n_steps):
+        optimizer.zero_grad(set_to_none=True)
+        trajectories, conditions = next(train_iter)
+        trajectories = trajectories.float().to(device)
+        conditions = {k: v.float().to(device) for k, v in conditions.items()}
+        loss, _ = diffusion.loss(trajectories, conditions)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(diffusion.parameters(), grad_clip)
+        optimizer.step()
+        if step % ema_update_every == 0:
+            ema_helper.update_model_average(ema_model, diffusion)
+        losses.append(loss.item())
+    diffusion.eval()
+    return float(np.mean(losses)) if losses else 0.0
+
+
+def evaluate_diffuser_loco(
+    env: gym.Env,
+    ema_model: Any,
+    normalizer: _LocoNormalizer,
+    n_episodes: int,
+    max_steps: int = 1000,
+    replan_every: int = 32,
+) -> float:
+    """Evaluate a trained Diffuser model (no value guide, pure diffusion planning)."""
+    ema_model.eval()
+    scores = []
+    for _ in range(n_episodes):
+        obs = env.reset()
+        total_r = 0.0
+        planned_actions = None
+        plan_idx = replan_every
+
+        for t in range(max_steps):
+            if plan_idx >= replan_every:
+                obs_normed = normalizer.normalize(
+                    np.asarray(obs, dtype=np.float32), "observations"
+                )
+                conditions = {0: torch.tensor(obs_normed, dtype=torch.float32).unsqueeze(0)}
+                device = next(ema_model.parameters()).device
+                conditions = {k: v.to(device) for k, v in conditions.items()}
+                with torch.no_grad():
+                    # Sample trajectory from the diffusion model
+                    sample_result = ema_model.conditional_sample(conditions)
+                    # sample_result is a Sample namedtuple; [0] = trajectories (1, H, transition_dim)
+                    samples = sample_result[0]
+                    actions_normed = samples[0, :, :ema_model.action_dim].cpu().numpy()
+                planned_actions = normalizer.unnormalize(actions_normed, "actions")
+                plan_idx = 0
+
+            action = np.clip(planned_actions[plan_idx], env.action_space.low, env.action_space.high)
+            plan_idx += 1
+            obs, reward, done, _ = env.step(action)
+            total_r += reward
+            if done:
+                break
+
+        scores.append(float(env.get_normalized_score(total_r)))
+    return float(np.mean(scores))
+
+
+def collect_diffuser_episodes_online(
+    env: gym.Env,
+    ema_model: Any,
+    normalizer: _LocoNormalizer,
+    n_episodes: int,
+    max_steps: int,
+    replan_every: int,
+) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray], float]:
+    """Collect episodes using trained Diffuser (no value guide)."""
+    ema_model.eval()
+    obs_l, act_l, rew_l, nobs_l, done_l = [], [], [], [], []
+    scores = []
+    for ep in range(n_episodes):
+        obs = env.reset()
+        total_r = 0.0
+        ep_obs, ep_act, ep_rew, ep_nobs, ep_done = [], [], [], [], []
+        planned_actions = None
+        plan_idx = replan_every
+
+        for t in range(max_steps):
+            if plan_idx >= replan_every:
+                obs_normed = normalizer.normalize(
+                    np.asarray(obs, dtype=np.float32), "observations"
+                )
+                conditions = {0: torch.tensor(obs_normed, dtype=torch.float32).unsqueeze(0)}
+                device = next(ema_model.parameters()).device
+                conditions = {k: v.to(device) for k, v in conditions.items()}
+                with torch.no_grad():
+                    sample_result = ema_model.conditional_sample(conditions)
+                    samples = sample_result[0]
+                    actions_normed = samples[0, :, :ema_model.action_dim].cpu().numpy()
+                planned_actions = normalizer.unnormalize(actions_normed, "actions")
+                plan_idx = 0
+
+            action = np.clip(planned_actions[plan_idx], env.action_space.low, env.action_space.high)
+            plan_idx += 1
+            next_obs, reward, done, _ = env.step(action)
+            ep_obs.append(obs.copy())
+            ep_act.append(action.copy())
+            ep_rew.append(float(reward))
+            ep_nobs.append(next_obs.copy())
+            ep_done.append(float(done))
+            total_r += reward
+            obs = next_obs
+            if done:
+                break
+
+        score = float(env.get_normalized_score(total_r))
+        scores.append(score)
+        obs_l.append(np.array(ep_obs, dtype=np.float32))
+        act_l.append(np.array(ep_act, dtype=np.float32))
+        rew_l.append(np.array(ep_rew, dtype=np.float32))
+        nobs_l.append(np.array(ep_nobs, dtype=np.float32))
+        done_l.append(np.array(ep_done, dtype=np.float32))
+
+    return obs_l, act_l, rew_l, nobs_l, done_l, float(np.mean(scores))
+
+
+# ---------------------------------------------------------------------------
 # Online SAC training loop
 # ---------------------------------------------------------------------------
 
@@ -706,6 +1018,371 @@ def run_condition_gcbc_diffuser(
     return [{"grad_step": n_gcbc_steps, "env_steps_total": env_steps, "norm_score": score}]
 
 
+def run_condition_diffuser_online(
+    env_name: str,
+    seed: int,
+    device: str,
+    n_online_episodes: int,
+    max_episode_steps: int,
+    diffuser_train_steps_per_round: int,
+    diffuser_train_batch_size: int,
+    collect_per_round: int,
+    eval_every_episodes: int,
+    n_eval_episodes: int,
+    replan_every: int,
+) -> List[Dict]:
+    """
+    Pure Diffuser online loop: Diffuser collects AND learns from scratch.
+
+    Every `collect_per_round` episodes, rebuild the dataset from ALL collected
+    episodes and retrain the diffusion model for `diffuser_train_steps_per_round`
+    gradient steps.  Evaluate the EMA model periodically.
+    """
+    rng = np.random.RandomState(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+
+    env = gym.make(env_name)
+    env.seed(seed)
+    eval_env = gym.make(env_name)
+    eval_env.seed(seed + 10000)
+
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+
+    print(f"[diffuser_online] env={env_name} seed={seed} building random Diffuser...", flush=True)
+    diffusion, ema_model, ema_helper, optimizer = build_diffuser_from_scratch(
+        obs_dim, action_dim, device, horizon=PLAN_HORIZON,
+    )
+
+    # Accumulate all collected episodes
+    all_obs: List[np.ndarray] = []
+    all_act: List[np.ndarray] = []
+    records: List[Dict] = []
+    grad_steps = 0
+    env_steps_total = 0
+    normalizer: Optional[_LocoNormalizer] = None
+
+    for ep in range(n_online_episodes):
+        # ----- Collect one episode -----
+        if normalizer is None:
+            # No trained model yet: collect random episode
+            obs = env.reset()
+            ep_obs, ep_act, ep_rew = [], [], []
+            for t in range(max_episode_steps):
+                action = env.action_space.sample()
+                next_obs, reward, done, _ = env.step(action)
+                ep_obs.append(obs.copy())
+                ep_act.append(action.copy())
+                ep_rew.append(float(reward))
+                obs = next_obs
+                env_steps_total += 1
+                if done:
+                    break
+            score = float(env.get_normalized_score(sum(ep_rew)))
+            all_obs.append(np.array(ep_obs, dtype=np.float32))
+            all_act.append(np.array(ep_act, dtype=np.float32))
+        else:
+            # Collect with current Diffuser model
+            o_l, a_l, r_l, _, _, score = collect_diffuser_episodes_online(
+                env, ema_model, normalizer, 1, max_episode_steps, replan_every
+            )
+            all_obs.extend(o_l)
+            all_act.extend(a_l)
+            env_steps_total += sum(len(o) for o in o_l)
+
+        # ----- Retrain Diffuser periodically -----
+        if (ep + 1) % collect_per_round == 0 and len(all_obs) >= 2:
+            print(f"  [diffuser_online] ep={ep+1} retraining on {len(all_obs)} episodes "
+                  f"({sum(len(o) for o in all_obs)} transitions)...", flush=True)
+
+            dataset = episodes_to_sequence_dataset(
+                all_obs, all_act, obs_dim, action_dim,
+                horizon=PLAN_HORIZON, max_path_length=max_episode_steps,
+            )
+            loader = torch.utils.data.DataLoader(
+                dataset, batch_size=diffuser_train_batch_size, shuffle=True,
+                num_workers=0, pin_memory=True,
+            )
+
+            mean_loss = train_diffuser_steps(
+                diffusion, ema_model, ema_helper, optimizer, loader,
+                n_steps=diffuser_train_steps_per_round, device=device,
+            )
+            grad_steps += diffuser_train_steps_per_round
+
+            # Update normalizer from dataset
+            info = dataset.normalizer_info
+            normalizer = _LocoNormalizer(
+                info["obs_min"], info["obs_max"],
+                info["act_min"], info["act_max"],
+            )
+            print(f"    loss={mean_loss:.4f}  grad_steps={grad_steps}", flush=True)
+
+        # ----- Evaluate periodically -----
+        if (ep + 1) % eval_every_episodes == 0:
+            if normalizer is not None:
+                eval_score = evaluate_diffuser_loco(
+                    eval_env, ema_model, normalizer, n_eval_episodes,
+                    max_steps=max_episode_steps, replan_every=replan_every,
+                )
+            else:
+                eval_score = 0.0
+            print(f"  [diffuser_online] ep={ep+1}/{n_online_episodes}  "
+                  f"grad_steps={grad_steps}  score={eval_score:.2f}", flush=True)
+            records.append({
+                "grad_step": grad_steps,
+                "env_steps_total": env_steps_total,
+                "norm_score": eval_score,
+            })
+
+    return records
+
+
+def run_condition_diffuser_collects_sac_learns(
+    env_name: str,
+    seed: int,
+    device: str,
+    n_online_episodes: int,
+    max_episode_steps: int,
+    batch_size: int,
+    train_steps_per_step: int,
+    diffuser_train_steps_per_round: int,
+    diffuser_train_batch_size: int,
+    collect_per_round: int,
+    eval_every_episodes: int,
+    n_eval_episodes: int,
+    replan_every: int,
+) -> List[Dict]:
+    """
+    Diffuser collects (with online improvement) → SAC learns from same data.
+
+    The Diffuser does online self-improvement (collect + retrain), while
+    simultaneously an SAC agent trains on the Diffuser-collected data.
+    This tests Diffuser as a collector vs SAC as a learner.
+    """
+    rng = np.random.RandomState(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+
+    env = gym.make(env_name)
+    env.seed(seed)
+    eval_env = gym.make(env_name)
+    eval_env.seed(seed + 10000)
+
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+
+    print(f"[diff_collects_sac_learns] env={env_name} seed={seed} building random Diffuser + SAC...", flush=True)
+    diffusion, ema_model, ema_helper, optimizer = build_diffuser_from_scratch(
+        obs_dim, action_dim, device, horizon=PLAN_HORIZON,
+    )
+    agent = SACAgentLoco(obs_dim, action_dim, device)
+    replay = ReplayBuffer(obs_dim, action_dim)
+
+    all_obs: List[np.ndarray] = []
+    all_act: List[np.ndarray] = []
+    records: List[Dict] = []
+    grad_steps = 0
+    env_steps_total = 0
+    normalizer: Optional[_LocoNormalizer] = None
+
+    for ep in range(n_online_episodes):
+        # ----- Collect one episode with Diffuser (or random initially) -----
+        if normalizer is None:
+            obs = env.reset()
+            ep_obs, ep_act, ep_rew, ep_nobs, ep_done = [], [], [], [], []
+            for t in range(max_episode_steps):
+                action = env.action_space.sample()
+                next_obs, reward, done, _ = env.step(action)
+                ep_obs.append(obs.copy())
+                ep_act.append(action.copy())
+                ep_rew.append(float(reward))
+                ep_nobs.append(next_obs.copy())
+                ep_done.append(float(done))
+                obs = next_obs
+                env_steps_total += 1
+                if done:
+                    break
+            all_obs.append(np.array(ep_obs, dtype=np.float32))
+            all_act.append(np.array(ep_act, dtype=np.float32))
+            replay.add_episode(
+                np.array(ep_obs), np.array(ep_act), np.array(ep_rew),
+                np.array(ep_nobs), np.array(ep_done),
+            )
+        else:
+            o_l, a_l, r_l, no_l, d_l, _ = collect_diffuser_episodes_online(
+                env, ema_model, normalizer, 1, max_episode_steps, replan_every
+            )
+            all_obs.extend(o_l)
+            all_act.extend(a_l)
+            for i in range(len(o_l)):
+                replay.add_episode(o_l[i], a_l[i], r_l[i], no_l[i], d_l[i])
+                env_steps_total += len(o_l[i])
+
+        # ----- Train SAC on collected data -----
+        ep_len = len(all_obs[-1])
+        for _ in range(ep_len * train_steps_per_step):
+            if replay.size >= batch_size:
+                agent.update(replay, batch_size)
+                grad_steps += 1
+
+        # ----- Retrain Diffuser periodically -----
+        if (ep + 1) % collect_per_round == 0 and len(all_obs) >= 2:
+            dataset = episodes_to_sequence_dataset(
+                all_obs, all_act, obs_dim, action_dim,
+                horizon=PLAN_HORIZON, max_path_length=max_episode_steps,
+            )
+            loader = torch.utils.data.DataLoader(
+                dataset, batch_size=diffuser_train_batch_size, shuffle=True,
+                num_workers=0, pin_memory=True,
+            )
+            train_diffuser_steps(
+                diffusion, ema_model, ema_helper, optimizer, loader,
+                n_steps=diffuser_train_steps_per_round, device=device,
+            )
+            info = dataset.normalizer_info
+            normalizer = _LocoNormalizer(
+                info["obs_min"], info["obs_max"],
+                info["act_min"], info["act_max"],
+            )
+
+        # ----- Evaluate SAC periodically -----
+        if (ep + 1) % eval_every_episodes == 0:
+            sac_score = evaluate_sac(eval_env, agent.actor, device, n_eval_episodes)
+            print(f"  [diff_collects_sac_learns] ep={ep+1}/{n_online_episodes}  "
+                  f"grad_steps={grad_steps}  sac_score={sac_score:.2f}", flush=True)
+            records.append({
+                "grad_step": grad_steps,
+                "env_steps_total": env_steps_total,
+                "norm_score": sac_score,
+            })
+
+    return records
+
+
+def run_condition_sac_collects_diffuser_learns(
+    env_name: str,
+    seed: int,
+    device: str,
+    n_online_episodes: int,
+    max_episode_steps: int,
+    batch_size: int,
+    train_steps_per_step: int,
+    diffuser_train_steps_per_round: int,
+    diffuser_train_batch_size: int,
+    collect_per_round: int,
+    eval_every_episodes: int,
+    n_eval_episodes: int,
+    replan_every: int,
+) -> List[Dict]:
+    """
+    SAC collects (with online improvement) → Diffuser learns from SAC's data.
+
+    SAC runs its normal online loop (collect + train), while simultaneously
+    a Diffuser trains on the SAC-collected data.
+    This tests SAC as a collector vs Diffuser as a learner.
+    """
+    rng = np.random.RandomState(seed)
+    torch.manual_seed(seed)
+    random.seed(seed)
+
+    env = gym.make(env_name)
+    env.seed(seed)
+    eval_env = gym.make(env_name)
+    eval_env.seed(seed + 10000)
+
+    obs_dim = env.observation_space.shape[0]
+    action_dim = env.action_space.shape[0]
+
+    print(f"[sac_collects_diff_learns] env={env_name} seed={seed} building SAC + random Diffuser...", flush=True)
+    agent = SACAgentLoco(obs_dim, action_dim, device)
+    replay = ReplayBuffer(obs_dim, action_dim)
+    diffusion, ema_model, ema_helper, diff_optimizer = build_diffuser_from_scratch(
+        obs_dim, action_dim, device, horizon=PLAN_HORIZON,
+    )
+
+    all_obs: List[np.ndarray] = []
+    all_act: List[np.ndarray] = []
+    records: List[Dict] = []
+    grad_steps = 0
+    env_steps_total = 0
+    normalizer: Optional[_LocoNormalizer] = None
+
+    for ep in range(n_online_episodes):
+        # ----- Collect one episode with SAC -----
+        obs = env.reset()
+        ep_obs, ep_act, ep_rew, ep_nobs, ep_done = [], [], [], [], []
+        for t in range(max_episode_steps):
+            if replay.size < batch_size:
+                action = env.action_space.sample()
+            else:
+                action = agent.actor.act(obs, device)
+            next_obs, reward, done, _ = env.step(action)
+            ep_obs.append(obs.copy())
+            ep_act.append(action.copy())
+            ep_rew.append(float(reward))
+            ep_nobs.append(next_obs.copy())
+            ep_done.append(float(done))
+            obs = next_obs
+            env_steps_total += 1
+            if done:
+                break
+
+        replay.add_episode(
+            np.array(ep_obs), np.array(ep_act), np.array(ep_rew),
+            np.array(ep_nobs), np.array(ep_done),
+        )
+        all_obs.append(np.array(ep_obs, dtype=np.float32))
+        all_act.append(np.array(ep_act, dtype=np.float32))
+
+        # ----- Train SAC -----
+        ep_len = len(ep_obs)
+        for _ in range(ep_len * train_steps_per_step):
+            if replay.size >= batch_size:
+                agent.update(replay, batch_size)
+                grad_steps += 1
+
+        # ----- Retrain Diffuser periodically on SAC's data -----
+        if (ep + 1) % collect_per_round == 0 and len(all_obs) >= 2:
+            dataset = episodes_to_sequence_dataset(
+                all_obs, all_act, obs_dim, action_dim,
+                horizon=PLAN_HORIZON, max_path_length=max_episode_steps,
+            )
+            loader = torch.utils.data.DataLoader(
+                dataset, batch_size=diffuser_train_batch_size, shuffle=True,
+                num_workers=0, pin_memory=True,
+            )
+            train_diffuser_steps(
+                diffusion, ema_model, ema_helper, diff_optimizer, loader,
+                n_steps=diffuser_train_steps_per_round, device=device,
+            )
+            info = dataset.normalizer_info
+            normalizer = _LocoNormalizer(
+                info["obs_min"], info["obs_max"],
+                info["act_min"], info["act_max"],
+            )
+
+        # ----- Evaluate Diffuser periodically -----
+        if (ep + 1) % eval_every_episodes == 0:
+            if normalizer is not None:
+                diff_score = evaluate_diffuser_loco(
+                    eval_env, ema_model, normalizer, n_eval_episodes,
+                    max_steps=max_episode_steps, replan_every=replan_every,
+                )
+            else:
+                diff_score = 0.0
+            print(f"  [sac_collects_diff_learns] ep={ep+1}/{n_online_episodes}  "
+                  f"grad_steps={grad_steps}  diff_score={diff_score:.2f}", flush=True)
+            records.append({
+                "grad_step": grad_steps,
+                "env_steps_total": env_steps_total,
+                "norm_score": diff_score,
+            })
+
+    return records
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -726,6 +1403,10 @@ class Config:
     n_eval_episodes: int = 5
     replan_every: int = 32             # Replan every H steps (=horizon)
     n_gcbc_steps: int = 10_000
+    # Diffuser online training params
+    diffuser_train_steps_per_round: int = 1000  # Diffuser grad steps per retrain round
+    diffuser_train_batch_size: int = 32         # Diffuser training batch size
+    collect_per_round: int = 10                 # Collect N episodes before retraining Diffuser
 
 
 def parse_args() -> Config:
@@ -744,6 +1425,9 @@ def parse_args() -> Config:
     p.add_argument("--n-eval-episodes", dest="n_eval_episodes", type=int, default=Config.n_eval_episodes)
     p.add_argument("--replan-every", dest="replan_every", type=int, default=Config.replan_every)
     p.add_argument("--n-gcbc-steps", dest="n_gcbc_steps", type=int, default=Config.n_gcbc_steps)
+    p.add_argument("--diffuser-train-steps-per-round", dest="diffuser_train_steps_per_round", type=int, default=Config.diffuser_train_steps_per_round)
+    p.add_argument("--diffuser-train-batch-size", dest="diffuser_train_batch_size", type=int, default=Config.diffuser_train_batch_size)
+    p.add_argument("--collect-per-round", dest="collect_per_round", type=int, default=Config.collect_per_round)
     return Config(**vars(p.parse_args()))
 
 
@@ -802,6 +1486,41 @@ def main():
                             cfg.n_diffuser_episodes,
                             cfg.max_episode_steps, cfg.n_gcbc_steps,
                             cfg.batch_size, cfg.n_eval_episodes,
+                            cfg.replan_every,
+                        )
+                    elif condition == "diffuser_online":
+                        records = run_condition_diffuser_online(
+                            env_name, seed, cfg.device,
+                            cfg.n_online_episodes,
+                            cfg.max_episode_steps,
+                            cfg.diffuser_train_steps_per_round,
+                            cfg.diffuser_train_batch_size,
+                            cfg.collect_per_round,
+                            cfg.eval_every_episodes, cfg.n_eval_episodes,
+                            cfg.replan_every,
+                        )
+                    elif condition == "diffuser_collects_sac_learns":
+                        records = run_condition_diffuser_collects_sac_learns(
+                            env_name, seed, cfg.device,
+                            cfg.n_online_episodes,
+                            cfg.max_episode_steps, cfg.batch_size,
+                            cfg.train_steps_per_step,
+                            cfg.diffuser_train_steps_per_round,
+                            cfg.diffuser_train_batch_size,
+                            cfg.collect_per_round,
+                            cfg.eval_every_episodes, cfg.n_eval_episodes,
+                            cfg.replan_every,
+                        )
+                    elif condition == "sac_collects_diffuser_learns":
+                        records = run_condition_sac_collects_diffuser_learns(
+                            env_name, seed, cfg.device,
+                            cfg.n_online_episodes,
+                            cfg.max_episode_steps, cfg.batch_size,
+                            cfg.train_steps_per_step,
+                            cfg.diffuser_train_steps_per_round,
+                            cfg.diffuser_train_batch_size,
+                            cfg.collect_per_round,
+                            cfg.eval_every_episodes, cfg.n_eval_episodes,
                             cfg.replan_every,
                         )
                     else:
