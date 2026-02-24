@@ -1,5 +1,37 @@
 # EBM Online RL Handoff Log (append-only)
 
+## 2026-02-21T21:12:00-06:00
+<!-- meta: {"type":"experiment_complete","artifact":"runs/analysis/locomotion_collector/grid_20260221-200301","commit":"a00fae9","dirty":true} -->
+
+### Scope
+Locomotion collector study complete. Extended our diffuser online RL prototype beyond Maze2D to locomotion (hopper, walker2d) using pretrained value-guided Diffuser. Compared diffuser_warmstart_sac vs sac_scratch vs gcbc_diffuser across 3 seeds.
+
+### Script
+`scripts/exp_locomotion_collector_study.py` (commit `a00fae9`) — NullRenderer patch + receding-horizon Diffuser planner (H=32, replan_every=32) + SAC + GCBC.
+
+### Results
+**Diffuser collection (batch_size=1, receding-horizon, 5 episodes):**
+- hopper: mean=0.353 ± 0.012 normalized score
+- walker2d: mean=0.200 ± 0.078 normalized score
+
+**Final scores (end of 100 online episodes = ~30k grad steps):**
+| Env | diffuser_warmstart_sac | sac_scratch | gcbc_diffuser |
+|---|---|---|---|
+| hopper | 0.141 ± 0.061 | 0.068 ± 0.006 | **0.252 ± 0.162** |
+| walker2d | 0.062 ± 0.012 | **0.089 ± 0.021** | 0.069 ± 0.025 |
+
+### Interpretation
+- Hopper: GCBC > diffuser_warmstart_sac > sac_scratch. BC on Diffuser demos effective.
+- Walker2d: sac_scratch ≈ gcbc ≈ diffuser_warmstart_sac; Diffuser warm-start offers no benefit (lower quality data).
+- All methods far below paper (Diffuser ~103 offline). Our setting: online 5+100 ep, batch_size=1 planning.
+- SAC not converged at this budget; asymptotic ordering might differ.
+
+### Artifacts
+- CSV: `runs/analysis/locomotion_collector/grid_20260221-200301/locomotion_collector_results.csv`
+- Log: `runs/analysis/locomotion_collector/grid_20260221-200301.log`
+
+---
+
 ## 2026-02-21T15:35:00+08:00
 <!-- meta: {"type":"experiment_complete","artifact":"runs/analysis/ablation_grid/grid_20260221-134801","dirty":false} -->
 
@@ -1126,3 +1158,1670 @@ python3 scripts/exp_swap_matrix_maze2d.py --help
 
 ### Next step
 - 5-seed swap matrix (blocking open Q#1 — paper CI)
+
+## 2026-02-22T14:55:00+08:00
+<!-- meta: {"type":"experiment_launch","commit":"328ac6e","dirty":true} -->
+
+### Scope
+Launched 3-phase experiment batch testing Diffuser online self-improvement from random init across maze2d medium/large and locomotion (hopper/walker2d).
+
+### Code changes (commit 328ac6e)
+- `scripts/exp_locomotion_collector_study.py` (+721 lines): Added 3 new conditions for 2×2 swap matrix:
+  - `diffuser_online`: Pure Diffuser→Diffuser from random init (core research question)
+  - `sac_collects_diffuser_learns`: SAC→Diffuser (tests Diffuser as learner)
+  - `diffuser_collects_sac_learns`: Diffuser→SAC (tests Diffuser as collector)
+  - New utility functions: `build_diffuser_from_scratch()`, `episodes_to_sequence_dataset()`, `train_diffuser_steps()`, `evaluate_diffuser_loco()`, `collect_diffuser_episodes_online()`
+- `scripts/exp_swap_matrix_maze2d.py` (+4 lines): Added `--env` CLI flag for medium/large maze support
+- All 4 conditions smoke-tested end-to-end before launch
+
+### Active experiments
+- Master PID: 64887 (`scripts/launch_all_experiments.sh`)
+- Phase 1 (running): maze2d-medium-v1 swap matrix (PID 64890)
+  - Output: `runs/analysis/swap_matrix/maze2d_medium_20260222-145304/`
+- Phase 2 (queued): maze2d-large-v1 swap matrix
+  - Output: `runs/analysis/swap_matrix/maze2d_large_20260222-145304/`
+- Phase 3 (queued): Locomotion online Diffuser (hopper + walker2d, 4 conditions × 3 seeds)
+  - Output: `runs/analysis/locomotion_collector/loco_swap_20260222-145304/`
+- Master log: `runs/analysis/all_experiments.log`
+
+### Previous experiments killed
+- PID 58752 (long-run locomotion with frozen pretrained Diffuser) — dead
+- PID 37747 (discord score poster) — dead
+- Reason: those experiments didn't train Diffuser online, so they weren't testing the right thing
+
+### Next step
+- Monitor experiment progress. When phases complete, analyze results and update memory docs.
+
+---
+
+## 2026-02-21T18:45:00+08:00
+### Scope
+- Built corrected experiment results bundle (grid_v2, threshold=0.2 fix).
+
+### Actions
+- Wrote `GPT_PRO_HANDOFF_20260221b.md` with all numbers recomputed from disk
+- Committed to branch `analysis/results-2026-02-21b` (commit `c2b7e92`), pushed to remote
+- Built `gpt_pro_bundle_20260221b.zip` (55KB) — uploaded to Discord
+
+### Key artifact
+- Remote branch: https://github.com/MachengShen/EBM_OnlineRL/tree/analysis/results-2026-02-21b
+- Bundle: `gpt_pro_bundle_20260221b.zip` (repo root)
+
+## 2026-02-22T17:25:43+08:00
+### Scope
+- Reviewed GPT-Pro EqNet execution plan for Maze2D integration and converted it into a repo-specific implementation checklist with blocking caveats.
+
+### Actions
+- Read plan attachment:
+  - `/root/.codex-discord-relay/instances/claude/uploads/discord_1472061022239195304_thread_1473203408256368795/attachments/1771752035647_f0083819_CODEX_TODO_EQNET_MAZE2D.txt`
+- Verified upstream EqNet reference implementation:
+  - cloned/inspected `/tmp/diffusion-stitching` at commit `d27cf2ab7bf760dc62742b34e7bacf4e83ea9562`
+  - inspected `/tmp/diffusion-stitching/eqnet.py`
+- Verified local integration points in current Maze2D stack:
+  - denoiser hardcoded to `TemporalUnet` in `scripts/synthetic_maze2d_diffuser_probe.py`
+  - denoiser call signature in `third_party/diffuser-maze2d/diffuser/models/diffusion.py`
+  - model exports in `third_party/diffuser-maze2d/diffuser/models/__init__.py`
+- Updated living snapshot:
+  - `docs/WORKING_MEMORY.md`
+
+### Key findings
+- Plan is feasible, but requires explicit adapter-level handling for two mismatches:
+  - import/packaging mismatch: upstream `eqnet.py` uses package-relative imports and is not root-drop-in importable as written
+  - call-signature mismatch: local stack calls `model(x, cond, t)` while upstream EqNet uses `(x, noise, condition)`
+- Additional caveats:
+  - EqNet asserts power-of-two horizon
+  - current probe lacks explicit planning-time metrics needed for fair compute comparisons
+  - active batch experiment is still running (`scripts/launch_all_experiments.sh`, PID `64887`; child `64890`), so EqNet changes should be isolated in branch/worktree
+
+### Evidence
+- Plan artifact:
+  - `/root/.codex-discord-relay/instances/claude/uploads/discord_1472061022239195304_thread_1473203408256368795/attachments/1771752035647_f0083819_CODEX_TODO_EQNET_MAZE2D.txt`
+- Upstream sources:
+  - `/tmp/diffusion-stitching/README.md`
+  - `/tmp/diffusion-stitching/eqnet.py`
+- Local integration references:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+  - `third_party/diffuser-maze2d/diffuser/models/diffusion.py`
+  - `third_party/diffuser-maze2d/diffuser/models/temporal.py`
+  - `third_party/diffuser-maze2d/diffuser/models/__init__.py`
+
+### Next step
+- Implement EqNet in an isolated branch/worktree with a `--denoiser_arch` switch + adapter shim, run a smoke comparison (`unet` vs `eqnet`, seed 0), then expand to 3-seed umaze ablation.
+
+## 2026-02-22T20:xx:00+08:00
+### Scope
+- Paused maze2d-medium swap matrix experiment to free GPU for architecture ablation (EqNet).
+
+### Actions
+- Killed PIDs 64887 (bash launcher), 64890 (orchestrator), 22208 (active cell: warmstart/diffuser_to_diffuser/seed_2).
+- Verified GPU free: 3 MiB used.
+- Updated docs/WORKING_MEMORY.md with pause state and resume instructions.
+
+### State at pause
+- Completed (7/24 cells, safe): phase1/diffuser/seed_{0,1,2}, phase2/frozen/diff_to_diff/seed_{0,1}, phase2/warmstart/diff_to_diff/seed_{0,1}
+- Lost (will re-run on resume): phase2/warmstart/diff_to_diff/seed_2 (was in-progress)
+- Remaining (17 cells): SAC Phase1 (3 seeds, bug fixed), all SAC-dependent Phase2 cells, warmstart/diff_to_diff/seed_2
+
+### Resume command (when GPU is free again)
+```bash
+nohup python3 scripts/exp_swap_matrix_maze2d.py \
+  --env maze2d-medium-v1 \
+  --base-dir runs/analysis/swap_matrix/maze2d_medium_20260222-145304 \
+  --seeds 0,1,2 --device cuda:0 &
+```
+Then manually run large maze and locomotion in sequence.
+
+## 2026-02-22T19:53:10+08:00
+### Scope
+- Recorded and mitigated a relay launcher mistake that prevented EqNet ablation from starting even with free GPU.
+
+### Actions
+- Killed stuck queued relay job processes (`19980`, `19986`) that were not launching the experiment.
+- Root cause documented:
+  - queued command used `while pgrep -f "scripts/launch_all_experiments.sh"` and the same literal string existed in the command line itself.
+  - this self-match kept the loop true forever, so launch never started.
+- Added a brief guardrail line to `docs/WORKING_MEMORY.md`.
+
+### Decision
+- Relaunch EqNet ablation without self-referential `pgrep -f` wait logic.
+
+## 2026-02-22T19:58:20+08:00
+<!-- meta: {"type":"analysis","run_id":"eqnet_vs_unet_3seed_20260222-195504","job_id":"j-20260222-195504-8810","task_id":"t-0003","commit":"e99252d","dirty":true} -->
+
+### Scope
+- Attempted callback analysis for EqNet vs UNet 3-seed run; analysis is blocked because the run is still active and summary artifacts are not generated yet.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+- Worktree path: /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+- Worktree commit used for run launch: e99252d
+
+### Hypothesis tested
+- H3: EqNet denoiser outperforms UNet on Maze2D online self-improvement under matched 3-seed budget.
+
+### Exact command(s) run
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d && mkdir -p runs/analysis/eqnet_vs_unet && RUN_ROOT=runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_$(date +%Y%m%d-%H%M%S) && mkdir -p $RUN_ROOT && printf '%s\n' $RUN_ROOT > runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt && echo [start] $RUN_ROOT && bash scripts/ablation_maze2d_eqnet_vs_unet.sh --env maze2d-umaze-v1 --seeds 0,1,2 --device cuda:0 --base-dir $RUN_ROOT 2>&1 | tee $RUN_ROOT/launcher.log
+```
+
+### Output artifacts
+- Run pointer: `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt`
+- Active run dir: `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/`
+- Launcher log: `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/launcher.log`
+- Seed log (in-progress): `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/unet/seed_0/stdout_stderr.log`
+- Expected-but-missing until completion:
+  - `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_vs_unet_summary.json`
+  - `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_vs_unet_rows.csv`
+  - per-seed `summary.json` files under `unet/seed_{0,1,2}` and `eqnet/seed_{0,1,2}`
+
+### Results (observed)
+- Job `j-20260222-195504-8810` is still running (no `exit_code` file yet).
+- Current stage: `unet/seed_0` training in progress; logs currently show progress through step 1000.
+- No aggregate metrics available yet (`n=3` EqNet-minus-UNet comparison cannot be computed at this time).
+
+### Interpretation
+- This is not an EqNet-vs-UNet outcome; it is an early callback timing issue.
+- Any deltas (success, distance, wall hits, runtime) would be speculative until summary artifacts are written.
+
+### Decision
+- Mark task `t-0003` blocked pending run completion and artifact materialization.
+
+### Next step (runnable)
+```bash
+RUN_ROOT=$(cat /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt)
+ABS_ROOT=/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/${RUN_ROOT}
+ls -lh "${ABS_ROOT}/eqnet_vs_unet_summary.json" "${ABS_ROOT}/eqnet_vs_unet_rows.csv"
+```
+
+## 2026-02-22T20:00:02+08:00
+<!-- meta: {"type":"state-correction","run_id":"eqnet_vs_unet_3seed_20260222-195504","task_id":"t-0003","commit":"e99252d","dirty":true} -->
+
+### Scope
+- Corrected EqNet run-root pointer after an accidental overwrite during a failed shell append attempt.
+
+### Actions
+- Restored canonical pointer:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt`
+  - value reset to `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504`
+- Recorded accidental duplicate partial directory for traceability:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195656/`
+
+### Exact command(s) run
+```bash
+printf '%s\n' 'runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504' > .worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt
+```
+
+### Results (observed)
+- Active relay job remains the canonical run `...195504` (still in progress).
+- Duplicate run directory `...195656` exists with partial logs only; no summary artifacts.
+
+### Decision
+- Keep blocked status for `t-0003` until `eqnet_vs_unet_summary.json` and `eqnet_vs_unet_rows.csv` exist for canonical run `...195504`.
+
+
+## 2026-02-22T12:03:29.162Z
+### Objective
+- Preserve cross-session continuity for the Maze2D validation workflow and callback-based experiment orchestration.
+- Hand off exact repo state, completed progress, and active blockers so the next agent can resume without re-discovery.
+
+### Changes
+- Working tree on `master` has tracked edits in `.gitignore`, `HANDOFF_LOG.md`, `docs/WORKING_MEMORY.md`, `research_finding.txt`, and `scripts/exp_swap_matrix_maze2d.py`.
+- Net tracked delta from `git diff --stat`: 5 files changed, 387 insertions, 216 deletions.
+- New untracked artifacts/scripts present: `MUJOCO_LOG.TXT`, `gpt_pro_bundle_20260221.zip`, `gpt_pro_bundle_20260221b.zip`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`, `scripts/discord_score_poster.py`, `scripts/discord_swap_matrix_monitor.py`, `scripts/launch_all_experiments.sh`.
+- Task snapshot indicates no active execution (`pending=0`, `running=0`) with partial progress (`done=1`, `blocked=2`).
+
+### Evidence
+- Workdir/repo root: `/root/ebm-online-rl-prototype`
+- Branch check context: `master`
+- Command: `git status --porcelain=v1`
+- Command: `git diff --stat`
+- Plan tail reference includes remaining pipeline tasks (steps 8-15): probe smoke verification, eval/replan/swap/diversity script alignment, mini end-to-end callback run, mismatch fixes, then full validation launches with memory/handoff updates.
+- Open dependency questions captured:
+- Exact attached plan content or path is still needed.
+- Exact `relay-long-task-callback` command/interface expected in this repo is still needed.
+- Confirmation needed on whether to recreate `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`.
+
+### Next steps
+- Resolve the three open questions before further implementation to avoid interface drift and rework.
+- Execute remaining plan steps 8-15 in order, starting with syntax/help/smoke checks and a mini callback-enabled E2E validation pass.
+- For each completed experiment phase, append evidence-backed updates to `HANDOFF_LOG.md` and refresh `docs/WORKING_MEMORY.md`.
+
+## 2026-02-22T20:32:40+08:00
+### Scope
+- Restored missing main-channel Discord poster for the active EqNet-vs-UNet 3-seed run and documented a prevention guardrail.
+
+### Context
+- conversation: `discord:1472061022239195304:thread:1473203408256368795`
+- job: `j-20260222-195504-8810`
+- run root: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/`
+
+### Actions
+- Confirmed run pointer from `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt`.
+- Re-launched poster with detached session + pid file so it survives command wrapper cleanup.
+- Verified poster process is alive and posting to main channel (`HTTP 200`).
+
+### Exact command(s) run
+- Launched `scripts/discord_swap_matrix_monitor.py` via `setsid` with `DISCORD_CHANNEL_ID=1472061023778242744`, `--label eqnet-vs-unet-umaze-3seed --interval 1800`; verified `[monitor] Posted (HTTP 200)` before exit.
+
+### Mistake
+- Poster was not auto-started when the long-running EqNet job was launched.
+
+### Cause
+- Process slip: focus stayed on run/analysis flow and skipped the `experiment-discord-poster` checklist step.
+
+### Guardrail
+- For any run expected to exceed ~30 minutes, start the poster in the same turn and verify one successful post (`HTTP 200`) plus a persistent PID file before concluding setup.
+
+### Evidence
+- Poster PID file: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_main_channel_monitor.pid` (`47454`)
+- Poster log: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_main_channel_monitor.log`
+- Verification output: `[monitor] Posted (HTTP 200)` and `done=0/1 running=1`.
+
+## 2026-02-22T20:59:35+08:00
+### Scope
+- Distilled notification-gap incident into pipeline failure log and verified live EqNet run + watcher configuration.
+
+### Actions
+- Appended incident entry to `/root/PIPELINE_FAILURE_LOG.md` covering poster-miss root cause and hard prevention gates.
+- Verified active run status and artifacts for `j-20260222-195504-8810`.
+- Verified relay watcher configuration for the active job from `/root/.codex-discord-relay/sessions.json`.
+- Refreshed `docs/WORKING_MEMORY.md` with updated stage (`unet/seed_1` running) and watcher state.
+
+### Evidence
+- Active job log: `/root/.codex-discord-relay/jobs/discord:1472061022239195304:thread:1473203408256368795/j-20260222-195504-8810/job.log`
+- Run launcher log: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/launcher.log`
+- Seed summary present: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/unet/seed_0/summary.json`
+- Poster process + log:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_main_channel_monitor.pid` (PID `47454`)
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_main_channel_monitor.log`
+- Watch config source: `/root/.codex-discord-relay/sessions.json` (`watch.enabled=true`, `everySec=120`, `runTasks=true`, `thenTask` present for `j-20260222-195504-8810`).
+
+## 2026-02-22T21:06:06+08:00
+### Scope
+- Recorded experiment-sequencing optimization feedback (novel architecture should run first when baseline already exists).
+
+### Mistake
+- EqNet-vs-UNet launch order was `unet -> eqnet`, which front-loaded repeated baseline results before producing new-architecture evidence.
+
+### Cause
+- Launcher script uses a fixed architecture loop order and does not account for prior baseline availability.
+
+### Guardrail
+- In architecture-comparison runs, if baseline has prior credible results, run novel architecture first (or interleave per seed) so early checkpoints maximize new information.
+
+### Evidence
+- Fixed loop order in launcher: `.worktrees/eqnet-maze2d/scripts/ablation_maze2d_eqnet_vs_unet.sh:132` (`for ARCH in unet eqnet; do`).
+- Active run command source: `/root/.codex-discord-relay/jobs/discord:1472061022239195304:thread:1473203408256368795/j-20260222-195504-8810/command.txt`.
+- Current run shows `unet` seeds started before any `eqnet` seed in `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/launcher.log`.
+
+## 2026-02-22T21:09:35+08:00
+### Scope
+- Corrected incident-log scope per user guidance: removed non-infra experiment notes from `/root/PIPELINE_FAILURE_LOG.md`.
+
+### Actions
+- Deleted non-infrastructure entries (poster/notification + experiment sequencing) from `/root/PIPELINE_FAILURE_LOG.md`.
+- Kept only AutoML/relay automation-relevant incidents.
+- Added explicit scope line to `docs/WORKING_MEMORY.md` logging policy to prevent recurrence.
+
+### Evidence
+- Updated file: `/root/PIPELINE_FAILURE_LOG.md` (remaining entries now: `20:00:02`, `20:15:00`, `20:15:30`).
+- Policy line added: `docs/WORKING_MEMORY.md` under `## Logging policy`.
+
+## 2026-02-22T21:37:45+08:00
+### Scope
+- Refreshed live status checkpoint for the active EqNet-vs-UNet 3-seed run after user progress/ETA request.
+
+### Actions
+- Queried relay job state for `j-20260222-195504-8810`.
+- Verified run artifacts and per-seed summaries under the canonical run root.
+- Updated `docs/WORKING_MEMORY.md` stage from `unet/seed_1` to `unet/seed_2` with completed-seed metrics.
+
+### Evidence
+- Relay job log (no exit code yet; still active):
+  - `/root/.codex-discord-relay/jobs/discord:1472061022239195304:thread:1473203408256368795/j-20260222-195504-8810/job.log`
+- Active run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/`
+- Completed summaries:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/unet/seed_0/summary.json` (`rollout_goal_success_rate_h256=0.5833`)
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/unet/seed_1/summary.json` (`rollout_goal_success_rate_h256=0.7500`)
+- In-progress seed log:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/unet/seed_2/stdout_stderr.log`
+- Poster health:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_main_channel_monitor.log` (latest: `HTTP 200`, `done=1/2 running=1`)
+
+### Status
+- Final aggregate artifacts remain pending:
+  - `eqnet_vs_unet_summary.json`
+  - `eqnet_vs_unet_rows.csv`
+- Run is still in the UNet half; EqNet seeds have not started yet.
+
+## 2026-02-23T02:55:40+08:00
+<!-- meta: {"type":"state-correction","run_id":"eqnet_vs_unet_3seed_20260222-195504","task_id":"t-0004","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Corrected malformed prior append block in HANDOFF_LOG by adding a clean, canonical t-0004 analysis entry.
+
+### Mistake
+- Previous append used an unquoted heredoc (`<<EOF`) while embedding markdown backticks, causing shell command substitution and noisy log text in the prior timestamp block.
+
+### Cause
+- Shell expansion was unintentionally enabled for markdown content containing backticks.
+
+### Guardrail
+- For all future markdown appends to logs, use quoted heredocs (`<<'EOF'`) only.
+
+### Corrected t-0004 analysis (authoritative)
+- Run locator: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt` -> `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504`
+- Aggregate artifacts analyzed:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_vs_unet_summary.json`
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_vs_unet_rows.csv`
+- Job status:
+  - relay job `j-20260222-195504-8810` finished with `exit_code=0`
+- EqNet vs UNet (`n=3` each):
+  - success mean: EqNet `0.2778` vs UNet `0.7778` -> delta `-0.5000`
+  - min-goal-distance mean: EqNet `0.8307` vs UNet `0.3838` -> delta `+0.4469`
+  - final-goal-distance mean: EqNet `0.9634` vs UNet `0.4397` -> delta `+0.5237`
+  - wall-hits mean: EqNet `89.9167` vs UNet `84.5556` -> delta `+5.3611`
+- Per-seed success@h256 (from rows CSV):
+  - UNet: `[0.5833, 0.7500, 1.0000]`
+  - EqNet: `[0.1667, 0.4167, 0.2500]`
+
+### Interpretation
+- In this 3-seed run, EqNet underperformed UNet on success and distance metrics.
+- Caveat: `n=3` is small and variance is non-trivial, so this is directional evidence, not final significance-grade proof.
+
+### Additional state update
+- Chained resume launcher detected EqNet completion and started medium swap matrix:
+  - `runs/analysis/resume_after_eqnet.log`
+  - active process: `scripts/exp_swap_matrix_maze2d.py` (PID `14590` observed)
+
+
+## 2026-02-22T18:54:29.885Z
+### Objective
+- Preserve the exact repo/experiment handoff state on `master` so the next agent can resume callback-based validation and launch flow without re-triage.
+
+### Changes
+- Branch: `master`; working tree is dirty.
+- Tracked files modified: `.gitignore`, `HANDOFF_LOG.md`, `docs/WORKING_MEMORY.md`, `research_finding.txt`, `scripts/exp_swap_matrix_maze2d.py`.
+- Diff summary: 5 files changed, 672 insertions, 205 deletions.
+- Untracked items present: `MUJOCO_LOG.TXT`, `gpt_pro_bundle_20260221.zip`, `gpt_pro_bundle_20260221b.zip`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`, `scripts/discord_score_poster.py`, `scripts/discord_swap_matrix_monitor.py`, `scripts/launch_all_experiments.sh`, `scripts/resume_after_eqnet.sh`.
+- Task counts snapshot: `pending=0`, `running=0`, `done=2`, `failed=0`, `blocked=2`, `canceled=0`.
+- Latest plan tail indicates implementation reached script updates/smoke stages; remaining work is callback mini-pipeline verification, mismatch fixes, then full validation launches.
+
+### Evidence
+- Workdir/repo root: `/root/ebm-online-rl-prototype`.
+- Command source: `git status --porcelain=v1`.
+- Command source: `git diff --stat`.
+- Path touched: `/root/ebm-online-rl-prototype/.gitignore`.
+- Path touched: `/root/ebm-online-rl-prototype/HANDOFF_LOG.md`.
+- Path touched: `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md`.
+- Path touched: `/root/ebm-online-rl-prototype/research_finding.txt`.
+- Path touched: `/root/ebm-online-rl-prototype/scripts/exp_swap_matrix_maze2d.py`.
+- Open blockers captured in context: exact attached plan content/path; exact `relay-long-task-callback` command/interface for this repo; decision on recreating `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`.
+
+### Next steps
+- Resolve the three open blocker questions before new long launches.
+- Run a mini end-to-end callback smoke pass (short run per experiment family) and fix any schema/analysis mismatches.
+- Launch full validation experiments one-by-one via callback workflow after smoke pass is clean.
+- After each completion, append evidence/results to `HANDOFF_LOG.md` and refresh `docs/WORKING_MEMORY.md`.
+
+## 2026-02-23T11:38:48+08:00
+<!-- meta: {"type":"docs+push","run_id":"eqnet_vs_unet_3seed_20260222-195504","task_id":"user-followup-gptpro-handoff","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Prepared GPT-Pro handoff materials for the unexpected EqNet-vs-UNet result and pushed the implementation branch to remote.
+
+### Actions
+- Identified implementation branch/worktree: `feature/eqnet-maze2d` at `.worktrees/eqnet-maze2d`.
+- Generated reviewer report with scripts used, exact commands, aggregate/per-seed tables, and implementation-audit checklist:
+  - `.worktrees/eqnet-maze2d/docs/GPT_PRO_EQNET_UNET_REVIEW_20260223.md`
+- Generated compact result table CSV for direct handoff:
+  - `.worktrees/eqnet-maze2d/docs/GPT_PRO_EQNET_UNET_TABLE_20260223.csv`
+- Committed docs on implementation branch:
+  - commit `2f91aed` (`docs: add EqNet vs UNet review packet for GPT-Pro`)
+- Pushed branch to remote:
+  - `origin/feature/eqnet-maze2d`
+  - PR URL template shown by remote: `https://github.com/MachengShen/EBM_OnlineRL/pull/new/feature/eqnet-maze2d`
+- Refreshed living snapshot with branch/doc pointers and current medium-run progress evidence.
+
+### Evidence
+- Run locator: `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/LAST_EQNET_3SEED_RUN.txt`
+- Aggregate artifacts:
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_vs_unet_summary.json`
+  - `.worktrees/eqnet-maze2d/runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/eqnet_vs_unet_rows.csv`
+- Branch state check:
+  - `git -C .worktrees/eqnet-maze2d branch --show-current` -> `feature/eqnet-maze2d`
+  - `git -C .worktrees/eqnet-maze2d log --oneline -1` -> `2f91aed ...`
+- Push confirmation:
+  - `git -C .worktrees/eqnet-maze2d push -u origin feature/eqnet-maze2d` (success)
+## 2026-02-23T13:06:08+08:00
+<!-- meta: {"type":"audit-unblock","task_id":"user-followup-probe-script-push","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Addressed GPT-Pro audit blocker about missing probe script visibility on GitHub.
+
+### Actions
+- Verified implementation branch/worktree state:
+  - branch: `feature/eqnet-maze2d`
+  - local HEAD: `2f91aed55b4b17e33c3f6e379936421868074d01`
+  - remote HEAD: `origin/feature/eqnet-maze2d` at the same commit.
+- Verified probe script is tracked and present in both local and remote branch trees:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+- Verified file history on branch and identified the introducing commit:
+  - `e99252d` (`Add EqNet denoiser option and Maze2D ablation tooling`).
+- Updated `docs/WORKING_MEMORY.md` with direct reviewer link and audit-unblock note.
+
+### Evidence
+- Branch parity check:
+  - `git -C .worktrees/eqnet-maze2d rev-parse HEAD`
+  - `git -C .worktrees/eqnet-maze2d rev-parse origin/feature/eqnet-maze2d`
+- Tree presence checks:
+  - `git -C .worktrees/eqnet-maze2d ls-tree -r --name-only HEAD scripts | rg '^scripts/synthetic_maze2d_diffuser_probe.py$'`
+  - `git -C .worktrees/eqnet-maze2d ls-tree -r --name-only origin/feature/eqnet-maze2d scripts | rg '^scripts/synthetic_maze2d_diffuser_probe.py$'`
+- File history:
+  - `git -C .worktrees/eqnet-maze2d log --oneline -- scripts/synthetic_maze2d_diffuser_probe.py`
+- Direct review URL:
+  - `https://github.com/MachengShen/EBM_OnlineRL/blob/feature/eqnet-maze2d/scripts/synthetic_maze2d_diffuser_probe.py`
+
+### Outcome
+- No new code commit was required: the requested probe script is already committed and pushed on `origin/feature/eqnet-maze2d`.
+- GPT-Pro can now verify adapter-level logic directly from the public branch path above.
+## 2026-02-23T14:11:42+08:00
+<!-- meta: {"type":"diagnostic-run","task_id":"user-followup-gptpro-proposal-unet-expert-overfit","branch":"feature/eqnet-maze2d","gpu_non_disruptive":true,"device":"cpu"} -->
+
+### Scope
+- Inspected GPT-Pro next-step proposal for EqNet/UNet diagnosis.
+- Executed a non-disruptive UNet offline diagnostic using an expert-style Maze2D dataset with explicit validation-loss tracking to test for overfitting.
+
+### Proposal validity check
+- Proposal is mostly valid against current implementation in `scripts/synthetic_maze2d_diffuser_probe.py`:
+  - supports `--denoiser_arch {unet,eqnet}`
+  - supports EqNet architecture knobs (`--eqnet_emb_dim`, `--eqnet_model_dim`, `--eqnet_n_layers`, `--eqnet_kernel_expansion_rate`)
+  - supports optimizer knobs (`--learning_rate`, `--grad_clip`)
+  - supports replay import (`--replay_import_path`) and validation-loss logging (`val_loss`)
+- Constraint noted:
+  - `scripts/ablation_maze2d_eqnet_vs_unet.sh` does not currently expose a full EqNet hyperparameter override grid; use direct probe invocations or add a small grid launcher for comprehensive sweeps.
+
+### Commands executed
+- Exported D4RL Maze2D-umaze dataset to replay artifact via `save_replay_artifact`: `1,000,000` transitions, `12,459` episodes → `runs/analysis/expert_dataset_unet_diag/maze2d_umaze_d4rl_replay_full.npz`
+- UNet offline run (1200 steps, eval every 300, aborted — CPU eval too slow): `synthetic_maze2d_diffuser_probe.py --denoiser_arch unet --train_steps 1200 --eval_goal_every 300` → `unet_offline_expert_seed0_*/`
+- UNet overfit diagnostic (600 steps, no eval, completed): `synthetic_maze2d_diffuser_probe.py --denoiser_arch unet --train_steps 600 --eval_goal_every 0` → `unet_offline_expert_noeval_seed0_20260223-140459/`
+### Artifacts
+- Replay artifact:
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/maze2d_umaze_d4rl_replay_full.npz`
+- Completed diagnostic run:
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/unet_offline_expert_noeval_seed0_20260223-140459/summary.json`
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/unet_offline_expert_noeval_seed0_20260223-140459/metrics.csv`
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/unet_offline_expert_noeval_seed0_20260223-140459/train_val_loss.png`
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/unet_offline_expert_noeval_seed0_20260223-140459/overfit_summary.json`
+
+### Results (observed)
+- Replay export:
+  - transitions: `1000000`
+  - episodes: `12459`
+  - file size: `20M`
+  - fingerprint: `74a39a4838d79b68`
+- Offline UNet fit behavior (expert replay, 600 steps):
+  - step 1: train loss `0.85894`, val loss `0.86246`
+  - step 600: train loss `0.23330`, val loss `0.24009`
+  - final val-train gap: `+0.00679`
+  - best val: step `550`, val `0.23549` (train `0.22720`)
+- Query evaluation (same run, `goal_threshold=0.2`):
+  - success rate: `0.0`
+  - mean rollout min-goal-distance: `0.72867`
+  - mean rollout final-goal-error: `2.11145`
+
+### Interpretation
+- On an expert-style offline dataset, UNet denoising loss decreases cleanly and validation tracks training closely; this run does **not** show immediate overfitting.
+- Low query success in this short CPU diagnostic indicates denoising-fit improvement alone did not yet translate to strong planning outcomes under this configuration.
+
+### Next steps
+- Run the same offline expert-dataset diagnostic on GPU (or longer CPU budget) with periodic rollout eval enabled to test when planning metrics begin improving.
+- Add a small grid launcher for EqNet sweeps (model_dim/lr/depth/kernel-growth) using direct `synthetic_maze2d_diffuser_probe.py` overrides.
+- Extend analyzer grouping by `(arch, eqnet_model_dim, learning_rate, eqnet_n_layers, eqnet_kernel_expansion_rate)` for next-wave attribution.
+## 2026-02-23T15:17:14+08:00
+<!-- meta: {"type":"diagnostic+reflection","task_id":"user-correction-eqnet-redo","branch":"feature/eqnet-maze2d","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Reinterpreted the GPT-Pro follow-up plan explicitly for EqNet (not UNet) after user correction.
+- Re-ran the expert-replay offline fit diagnostic with EqNet under matched budget and compared directly against the existing UNet diagnostic.
+- Added a local clarification guardrail in project memory artifacts (no global-context update).
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H5: EqNet can fit expert replay but converges to worse train/val regime than UNet under matched setup.
+
+### Exact command(s) run
+- `synthetic_maze2d_diffuser_probe.py --denoiser_arch eqnet --eqnet_emb_dim 32 --eqnet_model_dim 32 --eqnet_n_layers 25 --eqnet_kernel_expansion_rate 5 --train_steps 600 --disable_online_collection --replay_import_path <expert_replay.npz>` → `eqnet_offline_expert_noeval_seed0_20260223-142032/`
+- Terminated after step-600 training (CPU eval too slow): `kill -TERM 5586 5587`
+- Generated: `eqnet_vs_unet_expert_diag_compare.{csv,json}`, `overfit_summary_eqnet_train_only.json`
+
+### Output artifacts
+- EqNet run dir:
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/eqnet_offline_expert_noeval_seed0_20260223-142032/`
+- EqNet overfit summary (train/val focused):
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/eqnet_offline_expert_noeval_seed0_20260223-142032/overfit_summary_eqnet_train_only.json`
+- Paired comparison outputs:
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/eqnet_vs_unet_expert_diag_compare.json`
+  - `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/eqnet_vs_unet_expert_diag_compare.csv`
+
+### Results (observed)
+- EqNet (matched 600-step replay fit):
+  - step1 train/val: `3.0410 / 3.0356`
+  - step600 train/val: `0.3565 / 0.4533`
+  - final val-train gap: `+0.0968`
+  - best val: step `600`, val `0.4533`
+- UNet baseline (existing matched diagnostic):
+  - step1 train/val: `0.8589 / 0.8625`
+  - step600 train/val: `0.2333 / 0.2401`
+  - final val-train gap: `+0.0068`
+  - best val: step `550`, val `0.2355`
+- EqNet minus UNet deltas:
+  - final train loss: `+0.1232`
+  - final val loss: `+0.2132`
+  - final val-train gap: `+0.0900`
+
+### Interpretation
+- Under this matched offline expert replay setup, EqNet does fit (loss decreases), but converges to substantially worse train/val losses and a much larger generalization gap than UNet.
+- This supports the diagnostic claim that EqNet inferiority is not only online-collector noise; it already appears in replay-fit efficiency/stability under current integration + hyperparameters.
+- Query rollout metrics for this EqNet run are not included here because final fixed-query eval on CPU was too slow and was terminated after training completed.
+
+### Mistake
+- Ran UNet first due an ambiguous instruction-plan mismatch (user intended EqNet diagnostic).
+
+### Cause
+- I interpreted the literal prior wording without asking a clarification question when architecture target signals conflicted.
+
+### Guardrail
+- For this repo, if user instruction and attached plan can imply different architecture/target (example: UNet vs EqNet), ask one short clarification question before launching new experiments.
+
+### Evidence
+- EqNet process/termination: PID `5586` (python), PID `5587` (tee)
+- Run log: `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/eqnet_offline_expert_noeval_seed0_20260223-142032/run.log`
+- Comparison CSV: `.worktrees/eqnet-maze2d/runs/analysis/expert_dataset_unet_diag/eqnet_vs_unet_expert_diag_compare.csv`
+
+### Decision
+- Keep analysis local to project memory files (`HANDOFF_LOG.md`, `docs/WORKING_MEMORY.md`) and avoid adding generic reflection to global context.
+- Use this corrected EqNet diagnostic as the basis for the next EqNet-focused sweeps (model_dim/lr/layers/kernel expansion), with rollout-eval runtime tuned for CPU practicality or moved to GPU.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('runs/analysis/expert_dataset_unet_diag/eqnet_vs_unet_expert_diag_compare.json')
+print(json.loads(p.read_text())['metrics']['final_val_loss'])
+PY
+```
+## 2026-02-23T15:30:09+08:00
+<!-- meta: {"type":"bundle+commit","task_id":"user-request-commit-and-zip-for-gptpro","feature_branch":"feature/eqnet-maze2d","feature_commit":"5e0d363","dirty":true} -->
+
+### Scope
+- Ensured latest EqNet diagnostic interpretation is committed and pushed on the implementation branch.
+- Built a compact GPT-Pro handoff zip containing scripts, results, and interpretation.
+
+### Commit status
+- Worktree branch: `feature/eqnet-maze2d`
+- New commit: `5e0d363`
+- Subject: `docs: add short EqNet diagnostic summary for GPT-Pro handoff`
+- Push: success (`origin/feature/eqnet-maze2d`)
+
+### Exact command(s) run
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+git add docs/GPT_PRO_EQNET_DIAG_SHORT_SUMMARY_20260223.md
+git commit -m "docs: add short EqNet diagnostic summary for GPT-Pro handoff"
+git push origin feature/eqnet-maze2d
+
+python3 - <<'PY'
+# create gpt_pro_eqnet_diag_bundle_20260223.zip with scripts/results/interpretation
+PY
+```
+
+### Output artifacts
+- New interpretation doc (committed):
+  - `.worktrees/eqnet-maze2d/docs/GPT_PRO_EQNET_DIAG_SHORT_SUMMARY_20260223.md`
+- Handoff zip:
+  - `.worktrees/eqnet-maze2d/gpt_pro_eqnet_diag_bundle_20260223.zip`
+- Bundle manifest inside zip:
+  - `BUNDLE_MANIFEST.txt`
+
+### Bundle contents
+- Scripts:
+  - `scripts/eqnet_adapter.py`
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+  - `scripts/ablation_maze2d_eqnet_vs_unet.sh`
+  - `scripts/analyze_ablation_eqnet_vs_unet.py`
+  - `scripts/exp_swap_matrix_maze2d.py`
+- Results:
+  - `runs/analysis/eqnet_vs_unet/eqnet_vs_unet_3seed_20260222-195504/{eqnet_vs_unet_summary.json,eqnet_vs_unet_rows.csv,eqnet_vs_unet_summary.md,eqnet_vs_unet_success_curve.png}`
+  - `runs/analysis/expert_dataset_unet_diag/eqnet_offline_expert_noeval_seed0_20260223-142032/{metrics.csv,train_val_loss.png,overfit_summary_eqnet_train_only.json,run.log}`
+  - `runs/analysis/expert_dataset_unet_diag/unet_offline_expert_noeval_seed0_20260223-140459/{metrics.csv,train_val_loss.png,overfit_summary.json}`
+  - `runs/analysis/expert_dataset_unet_diag/{eqnet_vs_unet_expert_diag_compare.json,eqnet_vs_unet_expert_diag_compare.csv}`
+- Interpretation:
+  - `docs/GPT_PRO_EQNET_DIAG_SHORT_SUMMARY_20260223.md`
+  - `docs/GPT_PRO_EQNET_UNET_REVIEW_20260223.md`
+  - `docs/GPT_PRO_EQNET_UNET_TABLE_20260223.csv`
+
+### Results (observed)
+- Zip path: `/root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d/gpt_pro_eqnet_diag_bundle_20260223.zip`
+- Zip size: `294375` bytes (~288 KB)
+- Missing files during bundle build: `0`
+
+### Interpretation
+- Packaging request completed with reproducible artifact set and a committed interpretation update on the implementation branch.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+unzip -l gpt_pro_eqnet_diag_bundle_20260223.zip | head -n 60
+```
+## 2026-02-23T18:54:34+08:00
+<!-- meta: {"type":"state-correction","task_id":"user-eqnet-gap-plan-step1","run_id":"author_zero_step_20260223-180840","author_repo_commit":"d27cf2a","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Corrected malformed prior append block for the author-repo Step 1 entry and added an authoritative record.
+
+### Mistake
+- Prior append used an unquoted heredoc and markdown backticks were shell-expanded, producing blank/garbled fields.
+
+### Guardrail
+- For markdown appends to `HANDOFF_LOG.md`, use quoted heredocs (`<<'EOF'`) only.
+
+### Authoritative Step 1 record
+- Run id: `author_zero_step_20260223-180840`
+- Author repo: `/tmp/diffusion-stitching` @ `d27cf2a`
+- Dataset:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/datasets/gridland_n5_gc_author_notebookstyle.npy`
+- Run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/author_zero_step_20260223-180840/`
+- Pointer:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/LAST_STEP1_QUICK_RUN.txt`
+- Summary artifacts:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/author_zero_step_20260223-180840/step1_quick_table.csv`
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/author_zero_step_20260223-180840/step1_quick_summary.json`
+
+### Results (authoritative)
+- UNet (`train_steps=300`):
+  - `avg_completion_mean=0.0000`
+  - `avg_completion_std=0.0000`
+  - `train_wall_seconds=378`
+  - `eval_wall_seconds=240.5197`
+- EqNet (`train_steps=300`, matched config):
+  - `avg_completion_mean=0.0000`
+  - `avg_completion_std=0.0000`
+  - `train_wall_seconds=1096`
+  - `eval_wall_seconds=526.9647`
+- EqNet minus UNet:
+  - completion mean `0.0000`
+  - train wall `+718s`
+  - eval wall `+286.445s`
+
+### Local helper note
+- `/tmp/eval_author_checkpoint.py` was patched to support this author commit’s `eval_model()` tuple return (`res[0]`), avoiding false `TypeError` during evaluation.
+- No author-repo source files were modified.
+
+### Interpretation
+- At this tiny quick budget, EqNet did not exceed UNet in author repo context (both zero completion) and was significantly slower.
+- Treat this as a gating diagnostic signal only; full protocol/knob diff capture remains required for portability analysis.
+## ${TS}
+<!-- meta: {"type":"author-repo-loss-signal-check","task_id":"user-author-repo-intermediate-signal-check","run_id":"continuation_probe_20260223-195217","author_repo_commit":"d27cf2a","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Inspected author-repo training budget defaults and executed an intermediate-signal diagnostic to answer whether the failure at 300 steps is implementation breakage vs undertraining.
+- Used the exact Step-1 checkpoints (`step=300`) and continued training to `step=500` with trajectory-level train/val loss logging.
+
+### Protocol / evidence
+- Author defaults inspected:
+  - `goal_stitching/paper_experiments.sh`: `--gradient_steps 500000`, `--predict_noise False`, `--eval_interval 100000000`.
+  - `goal_stitching/diffusion_planner.py`: default `gradient_steps=500000`.
+- Continuation diagnostic run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/`
+- Inputs:
+  - Dataset: `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/datasets/gridland_n5_gc_author_notebookstyle.npy`
+  - UNet ckpt @ step300: `.../author_zero_step_20260223-180840/unet/checkpoints/step1-unet-gridland-n5-gc-4789683fdiffusion_ckpt_latest.pt`
+  - EqNet ckpt @ step300: `.../author_zero_step_20260223-180840/eqnet/checkpoints/step1-eqnet-gridland-n5-gc-94c263f6diffusion_ckpt_latest.pt`
+- Assumed Step-1 config (validated from eval artifacts):
+  - horizon `64`, model_dim `32`, emb_dim `32`, kernel_expansion_rate `5`, diffusion_steps `64`, batch_size `256`, predict_noise `False`, pad `True`, n_exec_steps `44`.
+
+### Results
+- UNet continuation (`300 -> 500`):
+  - step300 train/val: `0.08275 / 0.08379`
+  - step500 train/val: `0.07886 / 0.08423`
+  - val slope (300-500): `-4.89e-06` (near-flat / noisy)
+- EqNet continuation (`300 -> 500`):
+  - step300 train/val: `0.11974 / 0.12658`
+  - step500 train/val: `0.11194 / 0.11718`
+  - val slope (300-500): `-7.05e-05`
+  - val relative drop (300-500): `7.43%`
+- EqNet minus UNet val gap:
+  - at step300: `+0.04278`
+  - at step500: `+0.03295`
+
+### Interpretation
+- `300` steps is not a true convergence point for EqNet in this setup; EqNet val loss still improves materially beyond 300.
+- This supports the “not trained enough” component.
+- However, EqNet remains worse than UNet at matched checkpoints (gap shrinks but persists), so undertraining is not the only factor; protocol/conditioning/capacity/hyperparameter mismatch remains likely.
+
+### Runtime note
+- An earlier long probe (`loss_probe_20260223-191436`) was terminated after running with mismatched heavier defaults (horizon/model_dim) and produced no usable artifacts. The continuation probe above is the authoritative intermediate-signal result.
+
+### Artifacts
+- Summary JSON:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/continuation_probe_summary.json`
+- Curves:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/unet_continuation_300_to_500.csv`
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/eqnet_continuation_300_to_500.csv`
+## 2026-02-23T20:27:59+08:00
+<!-- meta: {"type":"state-correction","task_id":"user-author-repo-intermediate-signal-check","run_id":"continuation_probe_20260223-195217","author_repo_commit":"d27cf2a","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Corrected prior append that accidentally wrote a literal header token (`## ${TS}`) due quoted heredoc variable suppression.
+- Added authoritative timestamped record for the continuation loss-signal diagnostic.
+
+### Authoritative continuation record
+- Run id: `continuation_probe_20260223-195217`
+- Run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/`
+- Summary JSON:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/continuation_probe_summary.json`
+- Curves:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/unet_continuation_300_to_500.csv`
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_20260223-195217/eqnet_continuation_300_to_500.csv`
+
+### Key readout
+- UNet val loss: `0.08379 @300 -> 0.08423 @500` (near-flat/noisy)
+- EqNet val loss: `0.12658 @300 -> 0.11718 @500` (continues improving)
+- EqNet remains worse than UNet but the gap narrows (`+0.04278 -> +0.03295`).
+
+### Interpretation
+- Step-300 non-performance in author quick sanity is partially a training-budget issue for EqNet (not plateaued at 300).
+- Remaining EqNet-vs-UNet gap indicates additional protocol/hyperparameter mismatch beyond budget.
+## 2026-02-23T20:41:15+08:00
+<!-- meta: {"type":"policy-update","task_id":"inject-gpu-first-global-context","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Applied user-injected directive to make GPU-first execution a shared cross-agent rule and mirrored the guardrail in project memory.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- N/A — policy/memory update only.
+
+### Exact command(s) run
+```bash
+apply_patch /root/.codex-discord-relay/global-context.md (add GPU-First Execution Policy)
+apply_patch /root/SYSTEM_SETUP_WORKING_MEMORY.md (snapshot + timestamped system entry)
+apply_patch docs/WORKING_MEMORY.md (add repo GPU-first launcher guardrail)
+```
+
+### Output artifacts
+- `/root/.codex-discord-relay/global-context.md`
+- `/root/SYSTEM_SETUP_WORKING_MEMORY.md`
+- `docs/WORKING_MEMORY.md`
+
+### Results (observed)
+- Relay global context now instructs agents to prefer GPU for ML training/long eval loops and to avoid long CPU runs when system GPU exists but env lacks CUDA.
+- Project working memory now carries the same GPU-first launcher guardrail for experiment continuity.
+
+### Interpretation
+- This addresses the immediate process failure mode (slow CPU-heavy runs) at the instruction layer shared by future agents.
+
+### Decision
+- Keep this policy active and use it to gate the next continuation run setup (CUDA-capable env + explicit readiness checks before launch).
+
+### Next step (runnable)
+```bash
+cd /tmp/diffusion-stitching && source /root/miniconda3/bin/activate dstitch39 && python -c "import torch; print(torch.__version__, torch.version.cuda, torch.cuda.is_available())"
+```
+## 2026-02-23T21:02:38+08:00
+<!-- meta: {"type":"gpu-continuation-probe","task_id":"author-repo-step1-continuation-gpu","run_id":"continuation_probe_gpu_20260223-205021","author_repo_commit":"d27cf2a","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Converted author-repo env to CUDA PyTorch and continued both step300 checkpoints on GPU to step5000 with periodic train/val snapshots.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H8: Step-300 failure is largely undertraining; longer GPU continuation should significantly reduce val loss and shrink EqNet-vs-UNet gap.
+
+### Exact command(s) run
+```bash
+pip install --upgrade --index-url https://download.pytorch.org/whl/cu121 torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1  (env: dstitch39)
+python /tmp/author_continuation_gpu_probe.py --device cuda --start_step 300 --end_step 5000 --eval_every 250 --metric_batches 20 --batch_size 256 --schedule_total_steps 500000 [...]
+```
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_gpu_20260223-205021/continuation_probe_gpu_summary.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_gpu_20260223-205021/unet_continuation_300_to_5000.csv`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_gpu_20260223-205021/eqnet_continuation_300_to_5000.csv`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/continuation_probe_gpu_20260223-205021/run.log`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/LAST_CONTINUATION_GPU_RUN.txt`
+
+### Results (observed)
+- CUDA enablement check (`dstitch39`): `torch 2.5.1+cu121`, `torch.cuda.is_available=True`, device `NVIDIA GeForce RTX 3090`.
+- UNet continuation (300→5000): val `0.0772 -> 0.0126` (relative drop `83.7%`), elapsed `200.7s` (`0.0427 s/step`).
+- EqNet continuation (300→5000): val `0.1182 -> 0.0185` (relative drop `84.4%`), elapsed `469.1s` (`0.0998 s/step`).
+- EqNet-minus-UNet val gap: `+0.0410 @300 -> +0.0059 @5000`.
+
+### Interpretation
+- CPU-only runs were a major bottleneck; GPU continuation changes the learning signal qualitatively.
+- Both architectures were undertrained at tiny budgets; EqNet still trails UNet at step5000 but the gap becomes small.
+
+### Decision
+- Keep GPU-first policy as default and treat CPU-only long runs as misconfiguration unless explicitly requested.
+- Next protocol work should focus on author-knob transfer (`goal/history inpainting`, conditioning layout, objective toggles) rather than drawing conclusions from tiny CPU budgets.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('runs/analysis/author_repo_zero_step/continuation_probe_gpu_20260223-205021/continuation_probe_gpu_summary.json')
+print(json.loads(p.read_text())['eqnet_minus_unet'])
+PY
+```
+
+## 2026-02-23T21:54:49+08:00
+<!-- meta: {"type":"author-repo-success-vs-step-gpu","task_id":"user-success-vs-training-steps","run_id":"success_curve_gpu_20260223-210750","author_repo_commit":"d27cf2a","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Re-ran trajectory success-vs-training-step evaluation on GPU with a clean evaluator setup after prior import-path failures.
+- Compared UNet vs EqNet at matched checkpoints and matched eval settings.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H9: EqNet should exceed UNet trajectory success as training steps increase under matched author-repo settings.
+
+### Exact command(s) run
+- `eval_author_checkpoint.py --arch {unet,eqnet} --checkpoint *_step{500,1000,2000,3000,4000,5000}.pt --device cuda --num_envs 2 --num_episodes 1 --n_exec_steps 44 --sampling_steps 64` → `.../success_curve_gpu_20260223-210750/eval_success_clean_n2e1/`
+- Generated `success_vs_step_clean_n2e1.{csv,json}` from per-checkpoint JSON outputs.
+
+### Output artifacts
+- Run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/`
+- Clean eval dir:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/eval_success_clean_n2e1/`
+- Main outputs:
+  - `success_vs_step_clean_n2e1.csv`
+  - `success_vs_step_summary_clean_n2e1.json`
+
+### Results (observed)
+- UNet success mean by step: `0.0` at `500, 1000, 2000, 3000, 4000, 5000`
+- EqNet success mean by step: `0.0` at `500, 1000, 2000, 3000, 4000, 5000`
+- EqNet minus UNet: `0.0` at all evaluated steps.
+- Eval speed (`num_envs=2`, `num_episodes=1`):
+  - UNet about `30s/checkpoint`
+  - EqNet about `53s/checkpoint`
+
+### Interpretation
+- In this author-repo setup and evaluation protocol, neither model shows non-zero trajectory success up to step 5000.
+- There is no evidence here that EqNet outperforms UNet on trajectory success; both are tied at zero.
+- This contrasts with strong denoising-loss improvement, indicating loss decrease is not sufficient by itself for planning success under current protocol.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/eval_success_clean_n2e1/success_vs_step_summary_clean_n2e1.json')
+print(json.loads(p.read_text())['paired'])
+PY
+```
+## 2026-02-23T22:03:00+08:00
+<!-- meta: {"type":"author-repo-easiest-task-sanity","task_id":"user-easiest-task-replication","run_id":"easiest_task_repl_gpu_20260223-220221","author_repo_commit":"d27cf2a","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Diagnosed why low denoising loss still yields zero completion and ran a bounded GPU sanity replication on the easiest explicit GridLand start-goal tasks.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H10: zero success is mostly task difficulty; selecting an explicitly easiest task should produce non-zero completion.
+
+### Exact command(s) run
+- `python <inline> (scan UNet on explicit start-goal pairs with timeout=200, pick best pair, then eval UNet+EqNet on best pair)` → `.../easiest_task_repl_gpu_20260223-220221/`
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/easiest_task_repl_gpu_20260223-220221/scan_unet_pairs.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/easiest_task_repl_gpu_20260223-220221/easiest_pair_final_eval.json`
+
+### Results (observed)
+- Quick UNet pair scan (explicit starts/goals, `num_envs=2`, `num_episodes=1`, `timeout=200`) gave `0.0` completion for all tested pairs.
+- Best scanned pair by tie-break was `T0->T1` (still `0.0`).
+- Final easier-task replication on `T0->T1` (`num_envs=8`, `num_episodes=4`, `timeout=200`):
+  - UNet mean completion: `0.0`
+  - EqNet mean completion: `0.0`
+  - EqNet minus UNet: `0.0`
+
+### Interpretation
+- In this current author-gridland setup, zero completion is not only because we chose hard tasks; even explicit adjacent-edge pairs remain zero.
+- The learning objective can decrease while planning fails, because denoising loss is not a direct success metric and can stay low despite rollout-level control/planning mismatch.
+
+### Additional diagnostic note
+- `task_id`-based task sweeps appear inactive for this GridLand path in this commit:
+  - `goal_stitching/utilities/gridland_environment.py` sets `cur_task_id=-1` and reset handles `start_idx`/`goal_idx` keys, not `task_id`.
+  - This means `for task_id in [1..5]` loops do not create distinct GridLand tasks here.
+
+### Runtime note
+- A larger initial explicit-pair sweep was started, identified as too slow, and terminated; replaced by the bounded sanity protocol above.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/easiest_task_repl_gpu_20260223-220221/easiest_pair_final_eval.json')
+print(json.loads(p.read_text()))
+PY
+```
+
+## 2026-02-23T22:25:30+08:00
+<!-- meta: {"type":"author-gap-overnight-prep","task_id":"user-overnight-hypothesis-loop","run_id":"overnight_gap_hypothesis_20260223-222451","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Prepared a hypothesis-gated overnight driver for author-repo EqNet-vs-UNet gap analysis.
+- Upgraded the easy-task protocol to evaluate both architectures symmetrically in pair scan and planner-knob sweep.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypotheses queued
+- H1: zero success is mostly planner/eval protocol mismatch (not pure architecture failure).
+- H2: success emerges only at longer continuation budgets.
+- H3: EqNet may recover or exceed UNet on matched easy-task protocol at sufficient steps.
+
+### Exact command(s) run
+```bash
+python3 -m py_compile .worktrees/eqnet-maze2d/scripts/author_eqnet_gap_overnight.py
+python (dstitch39) -c "import scripts.author_eqnet_gap_overnight as d; print(hasattr(d,'main'))"
+```
+
+### Output artifacts
+- Driver script:
+  - `.worktrees/eqnet-maze2d/scripts/author_eqnet_gap_overnight.py`
+- Planned run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_20260223-222451/`
+
+### Results (observed)
+- CUDA readiness confirmed (`torch 2.5.1+cu121`, `torch.cuda.is_available=True`, `RTX 3090`).
+- Existing long GPU jobs are active; overnight driver is configured to wait for an exclusive window before training.
+
+### Decision
+- Launch overnight run through relay `job_start` with watch callback and automatic post-run analysis task.
+
+## 2026-02-23T22:32:30+08:00
+<!-- meta: {"type":"state-recovery","task_id":"user-recap-and-continue-after-relay-restart","run_id":"overnight_gap_hypothesis_20260223-222451","job_id":"j-20260223-222606-97d6","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Recovered state after relay restart and verified overnight hypothesis run continuity.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- N/A — runtime state continuity check.
+
+### Exact command(s) run
+```bash
+pgrep -af "author_eqnet_gap_overnight.py|overnight_gap_hypothesis_20260223-222451"
+tail /root/.codex-discord-relay/jobs/.../j-20260223-222606-97d6/job.log
+nvidia-smi --query-gpu=index,utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits
+```
+
+### Output artifacts
+- Relay job log:
+  - `/root/.codex-discord-relay/jobs/discord:1472061022239195304:thread:1473203408256368795/j-20260223-222606-97d6/job.log`
+- Run directory:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_20260223-222451/`
+
+### Results (observed)
+- Relay job is active (`j-20260223-222606-97d6`) and python process is alive.
+- Overnight run currently in wait-for-exclusive-GPU gate (run log still empty by design until gate exits).
+- GPU is currently occupied by ongoing swap-matrix large-maze workload.
+
+### Interpretation
+- Restart did not lose experiment context or the launched overnight job.
+- No new model metrics yet because pre-run gate has not cleared.
+
+### Decision
+- Continue with current active run and monitor for gate exit; avoid duplicate launch.
+
+### Next step (runnable)
+```bash
+tail -f /root/.codex-discord-relay/jobs/discord:1472061022239195304:thread:1473203408256368795/j-20260223-222606-97d6/job.log
+```
+
+## 2026-02-24T06:39:10+08:00
+<!-- meta: {"type":"author-gap-overnight-analysis","task_id":"t-0005","run_id":"overnight_gap_hypothesis_20260223-222451","job_id":"j-20260223-222606-97d6","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Analyzed completed relay job artifacts for the overnight EqNet-vs-UNet hypothesis run and triaged failure before continuation phase.
+- Applied a minimal guard patch to prevent out-of-bounds action indexing in planner execution.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H1: zero success is mostly planner/eval protocol mismatch.
+- H2: success emerges only at longer continuation budgets.
+- H3: EqNet may recover/exceed UNet under matched easy-task protocol.
+- H4: EqNet should exceed UNet trajectory success by end of run.
+
+### Exact command(s) run
+```bash
+python3 -m py_compile .worktrees/eqnet-maze2d/scripts/author_eqnet_gap_overnight.py
+python3 <artifact inspection snippets for phase0_easy_scan.json + run.log + relay job.log>
+```
+
+### Output artifacts
+- Run root:
+  - `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_20260223-222451/`
+- Available outputs:
+  - `phase0_easy_scan.json`
+  - `run.log`
+- Missing expected outputs (run failed before phase2):
+  - `continuation_metrics.csv`
+  - `summary.json`
+- Relay log:
+  - `/root/.codex-discord-relay/jobs/discord:1472061022239195304:thread:1473203408256368795/j-20260223-222606-97d6/job.log`
+- Patch applied:
+  - `.worktrees/eqnet-maze2d/scripts/author_eqnet_gap_overnight.py`
+
+### Results (observed)
+- Job exit code: `1`.
+- Failure point: `IndexError: index 127 is out of bounds for axis 1 with size 127` in `eval_pair` during phase1 knob with `n_exec_steps=128`.
+- Phase0 (13 easy pairs): UNet max success `0.0`, EqNet max success `0.0`; EqNet never exceeded UNet.
+- Phase1 completed knobs (2): both had `unet=0.0000`, `eqnet=0.0000` before crash.
+
+### Interpretation
+- H1 `task_too_hard_only`: **weakened** (easy-pair scan still zero for both).
+- H2 `planner_eval_mismatch`: **inconclusive** (knob sweep did not finish; observed knobs still zero).
+- H3 `undertraining/long continuation`: **inconclusive** (continuation phase not reached).
+- H4 `EqNet>UNet`: **weakened** on observed data (no EqNet-over-UNet success events).
+
+### Decision
+- Keep one-hypothesis discriminative follow-up: rerun the overnight pipeline with patched execution guard and overlap enabled to avoid long idle wait behind large swap-matrix run.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d && source /root/miniconda3/bin/activate dstitch39 && python scripts/author_eqnet_gap_overnight.py --repo /tmp/diffusion-stitching/goal_stitching --dataset runs/analysis/author_repo_zero_step/datasets/gridland_n5_gc_author_notebookstyle.npy --unet_ckpt runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/unet/checkpoints/succcurve-unet-gridland-n5-gc-d51e8ab9diffusion_ckpt_5000.pt --eqnet_ckpt runs/analysis/author_repo_zero_step/success_curve_gpu_20260223-210750/eqnet/checkpoints/succcurve-eqnet-gridland-n5-gc-3546ab1ddiffusion_ckpt_5000.pt --run_dir runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-0639 --device cuda --start_step 5000 --end_step 80000 --milestone_every 10000 --metric_batches 20 --batch_size 256 --schedule_total_steps 500000 --seed 0 --wait_for_gpu --allow_overlap --gpu_wait_timeout_sec 60 --gpu_wait_poll_sec 15
+```
+
+
+## 2026-02-23T22:09:39.943Z
+### Objective
+- Hand off the current Maze2D validation/ablation state on `master`, including what changed, what is blocked, and what to run next.
+
+### Changes
+- Tracked edits exist in [`.gitignore`](/root/ebm-online-rl-prototype/.gitignore), [`HANDOFF_LOG.md`](/root/ebm-online-rl-prototype/HANDOFF_LOG.md), [`docs/WORKING_MEMORY.md`](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md), [`research_finding.txt`](/root/ebm-online-rl-prototype/research_finding.txt), and [`scripts/exp_swap_matrix_maze2d.py`](/root/ebm-online-rl-prototype/scripts/exp_swap_matrix_maze2d.py).
+- Untracked artifacts/scripts are present: [`MUJOCO_LOG.TXT`](/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT), [`gpt_pro_bundle_20260221.zip`](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221.zip), [`gpt_pro_bundle_20260221b.zip`](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221b.zip), [`gpt_pro_handoff_bundle_20260220.zip`](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip), [`gpt_pro_handoff_bundle_20260220/`](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220/), [`memory/`](/root/ebm-online-rl-prototype/memory/), [`scripts/discord_score_poster.py`](/root/ebm-online-rl-prototype/scripts/discord_score_poster.py), [`scripts/discord_swap_matrix_monitor.py`](/root/ebm-online-rl-prototype/scripts/discord_swap_matrix_monitor.py), [`scripts/launch_all_experiments.sh`](/root/ebm-online-rl-prototype/scripts/launch_all_experiments.sh), [`scripts/resume_after_eqnet.sh`](/root/ebm-online-rl-prototype/scripts/resume_after_eqnet.sh).
+- Diffstat snapshot: 5 tracked files changed, 1542 insertions, 204 deletions.
+- Task tracker snapshot: `done=3`, `blocked=2`, `pending=0`, `running=0`, `failed=0`, `canceled=0`.
+
+### Evidence
+- Repo root: `/root/ebm-online-rl-prototype`
+- Branch: `master` from `git branch --show-current`
+- Dirty tree and untracked files from `git status --porcelain=v1`
+- File-level change volume from `git diff --stat`
+- Remaining execution context from `last_plan_tail` (steps 8-15) and blocker questions in the provided snapshot
+
+### Next steps
+- Confirm the exact attached plan text/path so remaining tasks can be mapped precisely.
+- Confirm the required `relay-long-task-callback` interface/command for this repo.
+- Confirm whether recreating `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` is required in this cycle.
+- After confirmations, continue the remaining sequence: finish script/schema verification, run the mini callback pipeline, fix mismatches, then launch full validation runs one-by-one and keep [`docs/WORKING_MEMORY.md`](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md) and [`HANDOFF_LOG.md`](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) updated after each completion.
+## 2026-02-24T10:15:05+08:00
+<!-- meta: {"type":"proposal-doc","task_id":"user-default-iterative-debug-policy-proposal","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Added a handoff-ready markdown proposal for making iterative debug/recovery default behavior for long experiment callbacks.
+- Updated working-memory snapshot with a direct pointer to the proposal.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Exact command(s) run
+```bash
+apply_patch docs/plans/2026-02-24-iterative-debug-supervisor-contract.md (new)
+apply_patch docs/WORKING_MEMORY.md (last-updated + proposal pointer)
+```
+
+### Output artifacts
+- `docs/plans/2026-02-24-iterative-debug-supervisor-contract.md`
+- `docs/WORKING_MEMORY.md`
+
+### Results (observed)
+- Proposal now exists in-repo and is ready to hand over to the system-level mechanism owner.
+- Proposal includes target flow, contracts, failure policy, bounded iterative loop, acceptance tests, and rollout plan.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype
+sed -n '1,220p' docs/plans/2026-02-24-iterative-debug-supervisor-contract.md
+```
+## 2026-02-24T10:51:16+08:00
+### Objective
+- Implement smoke-gated iterative-debug v1.1 contract and a runnable stage-0 launcher to block trivial failures before full-budget runs.
+
+### Changes
+- Rewrote the supervisor contract doc with smoke-first flow, explicit terminal statuses, guardrails, stable state path, risk/caveat section, and rollout/acceptance updates.
+- Added executable helper `scripts/stage0_smoke_gate.py` implementing smoke->full gating with required-artifact checks, state persistence, and optional smoke cleanup via manifest-only mode.
+- Added a reference runner template in the plan doc for immediate usage.
+
+### Exact command(s) run
+```bash
+apply_patch docs/plans/2026-02-24-iterative-debug-supervisor-contract.md
+apply_patch scripts/stage0_smoke_gate.py
+python3 -m py_compile scripts/stage0_smoke_gate.py
+python3 scripts/stage0_smoke_gate.py ... (3 runtime scenarios) -> tmp/stage0_gate_tests_1771901452/
+```
+
+### Verification
+- Runtime test matrix under `tmp/stage0_gate_tests_1771901452/`:
+  - `t1`: smoke pass + full pass => `rc=0`, state `success`.
+  - `t2`: smoke fail => `rc=20`, state `blocked_smoke_failed_exit`, full stage not launched.
+  - `t3`: full missing required artifact => `rc=31`, state `blocked_full_missing_artifacts`.
+- Syntax check: `py_compile` passed for `scripts/stage0_smoke_gate.py`.
+
+### Evidence paths
+- `/root/ebm-online-rl-prototype/docs/plans/2026-02-24-iterative-debug-supervisor-contract.md`
+- `/root/ebm-online-rl-prototype/scripts/stage0_smoke_gate.py`
+- `/root/ebm-online-rl-prototype/tmp/stage0_gate_tests_1771901452/`
+- `/tmp/stage0_t1.log`
+- `/tmp/stage0_t2.log`
+- `/tmp/stage0_t3.log`
+
+### Current run state
+- No long experiment launched in this change; this is contract/tooling implementation plus local runtime validation.
+
+### Next steps
+- Wire `scripts/stage0_smoke_gate.py` into one canary relay `job_start` flow and verify callback/handoff integration end-to-end.
+## 2026-02-24T10:52:22+08:00
+### Scope
+- Hardened `stage0_smoke_gate.py` path handling so relative required-artifact paths and `smoke_run_dir` are resolved against the configured `--cwd` (not caller shell cwd).
+
+### Exact command(s) run
+```bash
+apply_patch scripts/stage0_smoke_gate.py (relative-path resolution fix)
+python3 -m py_compile scripts/stage0_smoke_gate.py
+python3 scripts/stage0_smoke_gate.py ... (relative-path runtime check) -> tmp/stage0_gate_tests_1771901452/t4_rel/
+```
+
+### Verification
+- Relative-path runtime check from `/tmp` succeeded: `rc=0`, state `success`.
+- Cleanup behavior verified: smoke dir deleted and manifest retained (`deleted_smoke_run_dir_kept_manifest`).
+
+### Evidence paths
+- `/root/ebm-online-rl-prototype/scripts/stage0_smoke_gate.py`
+- `/root/ebm-online-rl-prototype/tmp/stage0_gate_tests_1771901452/t4_rel/`
+- `/tmp/stage0_t4.log`
+## 2026-02-24T10:58:23+08:00
+### Objective
+- Run a real relay callback canary for the smoke-gated stage-0 runner in this Discord thread, and define relay-native supervisor integration touchpoints.
+
+### Scope
+- Callback canary launch prepared with `job_start + watch.thenTask + runTasks=true` in-thread.
+- Integration design mapped to relay hooks (`normalizeRelayActionWatch`, `normalizeRelayAction`, `normalizeJobWatchConfig`, watcher finalize path).
+
+### Current run state
+- Canary launch pending dispatch in-thread via relay action block.
+## 2026-02-24T11:00:08+08:00
+### Scope
+- Completed callback follow-up task `t-0002` for the relay E2E smoke-gate canary and validated required artifacts/cleanup behavior.
+
+### IDs
+- task_id: `t-0002`
+- relay_job_id: `j-20260224-105924-2b5b`
+- run_id: `relay_e2e_20260224-105924`
+
+### Exact command(s) run
+```bash
+cat /tmp/relay_callback_e2e_last_path.txt
+sed -n '1,220p' <run_dir>/{state.json,gate.out.log,gate.err.log,smoke_manifest.json}
+ls -la <run_dir>; test -d <run_dir>/smoke
+```
+
+### Verification
+- Path file resolved to: `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-105924`.
+- `state.json` reports `status: success`.
+- Both phases report `status: passed`, `exit_code: 0`, and `missing_files: []`.
+- `smoke_cleanup.action` is `deleted_smoke_run_dir_kept_manifest`.
+- `smoke_manifest.json` exists and lists smoke artifacts (`run.log`, `summary.json`).
+- Smoke run directory is absent after completion (`<run_dir>/smoke` missing), confirming cleanup.
+- `gate.out.log` contains smoke and full pass lines; `gate.err.log` is empty.
+
+### Evidence paths
+- `/tmp/relay_callback_e2e_last_path.txt`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-105924/state.json`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-105924/gate.out.log`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-105924/gate.err.log`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-105924/smoke_manifest.json`
+- `/root/.codex-discord-relay/sessions.json`
+
+### Current run state
+- Callback canary job `j-20260224-105924-2b5b` completed with `exitCode=0`; follow-up task `t-0002` completed.
+
+### Next steps
+- Optional: implement relay-native supervisor Phase 1 behind a feature flag (`watch.supervisor` contract parsing + smoke/full gate execution wrapper) and canary it in this thread.
+## 2026-02-24T12:02:30+08:00
+<!-- meta: {"type":"highconf-side-by-side-eval","task_id":"user-high-confidence-eqnet-vs-unet","run_id":"highconf_n16e8_20260224","parent_run_id":"overnight_gap_hypothesis_overlapfix_20260224-095558","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Ran a higher-confidence side-by-side evaluation for EqNet vs UNet on the same selected pair (`T0->T1`) using substantially more rollouts.
+- Objective: replace low-sample (8-rollout) checkpoint readouts with a stronger comparison to test whether EqNet is better than UNet at this task.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Exact command(s) run
+- `python <inline> (author_repo eval_pair-based side-by-side eval at steps {55000,65000}, pair T0->T1, planner {64/44/200,temp=0.5}, num_envs=16, num_episodes=8)` → `.../eval_highconf_n16e8_20260224/`
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/eval_highconf_n16e8_20260224/side_by_side.csv`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/eval_highconf_n16e8_20260224/side_by_side.json`
+
+### Results (observed)
+- Eval protocol (both arches, both checkpoints): `sampling_steps=64`, `n_exec_steps=44`, `timeout_steps=200`, `temperature=0.5`, `num_envs=16`, `num_episodes=8` (total `128` rollouts/model/checkpoint).
+- Step `55000`:
+  - UNet: `0.6094` (`78/128`, 95% CI `[0.5228, 0.6895]`)
+  - EqNet: `0.9531` (`122/128`, 95% CI `[0.9015, 0.9783]`)
+  - EqNet minus UNet: `+0.3438`
+- Step `65000`:
+  - UNet: `0.6719` (`86/128`, 95% CI `[0.5866, 0.7472]`)
+  - EqNet: `0.8906` (`114/128`, 95% CI `[0.8248, 0.9337]`)
+  - EqNet minus UNet: `+0.2188`
+
+### Interpretation
+- With higher-sample evaluation, EqNet remains better than UNet at both tested matched checkpoints on this task.
+- This supports the claim that the prior EqNet advantage was not only an artifact of 8-rollout quantization.
+
+### Current run state
+- Parent continuation run (`overnight_gap_hypothesis_overlapfix_20260224-095558`) remains active; `continuation_metrics.csv` and final `summary.json` are still pending.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+sed -n '1,200p' runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/eval_highconf_n16e8_20260224/side_by_side.csv
+```
+
+## 2026-02-24T13:15:00+08:00
+<!-- meta: {"type":"mechanistic-diagnosis","task_id":"user-goal-propagation-gap-analysis","run_id":"goal_influence_diag_20260224","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Ran falsification-first diagnostics for the EqNet-vs-UNet gap focusing on horizon, goal propagation to early actions, and dependence on goal inpainting width.
+- Used the exact author-repo continuation checkpoints where high-confidence side-by-side eval showed EqNet > UNet.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypotheses tested
+- H11: In the author setup, goal information does not reach early actions (first executed action is effectively goal-agnostic).
+- H12: EqNet performance is strongly contingent on multi-step terminal goal anchoring (`goal_inpaint_steps`), unlike UNet.
+
+### Exact command(s) run
+- `python <inline> (goal-to-first-action sensitivity, matched-noise across goals; UNet/EqNet @ steps 55k,65k)` -> `.../goal_influence_diag_20260224/`
+- `python <inline> (goal_inpaint_steps ablation {25,1} on pair T0->T1; n=128 rollouts/arch)` -> `.../goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000.json`
+- `python <inline> (exploratory quick sweep goal_inpaint_steps {1,5,10,25}; n=32 rollouts/arch)` -> `.../goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000_quicksweep_n32.json`
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_influence_diag_20260224/goal_influence_summary.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_influence_diag_20260224/goal_influence_rows.csv`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000_quicksweep_n32.json`
+
+### Results (observed)
+- Author setup planner invariants (from run config/code path):
+  - `horizon=64`, `pad=True` -> `gen_horizon=128`
+  - `inpaint=True`, `goal_inpaint_steps=25`, `n_exec_steps=44`, `sampling_steps=64`
+- EqNet theoretical receptive field under current architecture (`n_layers=25`, `kernel_expansion_rate=5`, schedule `[3x5,5x5,7x5,9x5,11x5,13x2]`):
+  - RF positions: `349` (> `gen_horizon=128`)
+- Goal-to-first-action sensitivity (matched noise, fixed start `T0`, goals `{T1,T5,B5,L2,R4}`, 48 samples/goal):
+  - UNet step55k: mean `||Δa0(goal,ref)|| = 1.4295` (between/within `72.69`)
+  - UNet step65k: mean `||Δa0(goal,ref)|| = 1.4419` (between/within `78.37`)
+  - EqNet step55k: mean `||Δa0(goal,ref)|| = 1.3036` (between/within `40.97`)
+  - EqNet step65k: mean `||Δa0(goal,ref)|| = 1.3088` (between/within `35.12`)
+- Goal inpaint-width ablation @ step65k, pair `T0->T1`, high-confidence eval (`16x8=128` rollouts/model):
+  - UNet: `goal_inpaint_steps 25 -> 1` : `0.5781 -> 0.9219` (`+0.3438`)
+  - EqNet: `goal_inpaint_steps 25 -> 1` : `0.8906 -> 0.0000` (`-0.8906`)
+- Exploratory quick sweep (n=32 rollouts/model, same pair/step) indicates EqNet recovers with wider inpainting:
+  - EqNet: step-window `1:0.0000`, `5:0.7813`, `10:0.9063`, `25:0.7500` (noisy but strongly non-monotonic vs window)
+
+### Interpretation
+- H11 (goal cannot influence early actions in author setup): **weakened/falsified** by direct first-action sensitivity; both architectures are goal-sensitive at step 55k/65k.
+- H12 (EqNet depends strongly on terminal goal anchoring width): **supported**; reducing to a single terminal inpaint step collapses EqNet success at step65k under matched eval.
+- Mechanistic implication for gap with earlier online RL EqNet-vs-UNet run:
+  - Online RL stack conditions only `{t=0, t=horizon-1}` via `GoalDataset` + `apply_conditioning` (single terminal anchor), while author setup anchors a 25-step terminal suffix.
+  - This aligns with EqNet being strong in author setup (wide goal anchoring) but weak in prior online RL run (single-step anchor), despite matched horizon power-of-two constraints.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000.json')
+print(json.dumps(json.loads(p.read_text()), indent=2))
+PY
+```
+
+## 2026-02-24T12:18:33+08:00
+<!-- meta: {"type":"run-audit","task_id":"t-0006","run_id":"overnight_gap_hypothesis_overlapfix_20260224-095558","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Audited completion state for `overnight_gap_hypothesis_overlapfix_20260224-095558` and applied the retry policy gate from task `t-0006`.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H1-H4 status audit from final run summary.
+
+### Exact command(s) run
+```bash
+python <inline> (check summary.json/continuation_metrics.csv/run.log terminal line + parse summary hypotheses + per-step EqNet-vs-UNet deltas)
+```
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/summary.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/continuation_metrics.csv`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/run.log`
+
+### Results (observed)
+- Required artifacts exist: `summary.json` and `continuation_metrics.csv` are present.
+- `run.log` ends with `Finished overnight driver` and summary path; no nonzero exit evidence observed.
+- Final hypothesis statuses from `summary.json`:
+  - H1 `task_too_hard_only`: `weakened`
+  - H2 `planner_eval_mismatch`: `inconclusive`
+  - H3 `undertraining`: `supported`
+  - H4 `eqnet_should_outperform_unet`: `supported`
+- EqNet exceeded UNet success at 7/9 continuation checkpoints (`15000, 25000, 35000, 45000, 55000, 65000, 80000`), tied at `5000`, lower at `75000`.
+
+### Interpretation
+- Retry conditions were not met; the run completed successfully with usable final artifacts.
+- H3/H4 remain supported in this run, with repeated EqNet-over-UNet success advantages across milestones.
+
+### Decision
+- No `_retry1` relaunch executed because artifact/exit checks passed.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/summary.json')
+print(json.loads(p.read_text())['hypotheses'])
+PY
+```
+
+
+## 2026-02-24T04:19:23.553Z
+### Objective
+- Preserve the current Maze2D validation/debug state and hand off enough context to resume callback-driven experiment execution without re-discovery.
+- Capture repo, task, and plan status at a point where implementation progress is ahead of verification and launch execution.
+
+### Changes
+- Modified tracked files: [.gitignore](/root/ebm-online-rl-prototype/.gitignore), [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md), [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md), [research_finding.txt](/root/ebm-online-rl-prototype/research_finding.txt), [scripts/exp_swap_matrix_maze2d.py](/root/ebm-online-rl-prototype/scripts/exp_swap_matrix_maze2d.py).
+- Current diff footprint is large: 1,997 insertions and 204 deletions across 5 tracked files.
+- Added new untracked orchestration/monitoring assets including [scripts/discord_score_poster.py](/root/ebm-online-rl-prototype/scripts/discord_score_poster.py), [scripts/discord_swap_matrix_monitor.py](/root/ebm-online-rl-prototype/scripts/discord_swap_matrix_monitor.py), [scripts/launch_all_experiments.sh](/root/ebm-online-rl-prototype/scripts/launch_all_experiments.sh), [scripts/resume_after_eqnet.sh](/root/ebm-online-rl-prototype/scripts/resume_after_eqnet.sh), [scripts/stage0_smoke_gate.py](/root/ebm-online-rl-prototype/scripts/stage0_smoke_gate.py), and planning/memory artifacts.
+- Task snapshot: `pending=0`, `running=0`, `done=4`, `failed=0`, `blocked=2`, `canceled=0`.
+- Plan tail indicates implementation focus through experiment/eval scripts, mini pipeline validation, then full validation launches; three blocker questions remain unresolved (attached plan source, callback interface contract, whether to recreate `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`).
+
+### Evidence
+- Command: `cd /root/ebm-online-rl-prototype && git status --porcelain=v1` (shows modified tracked files plus untracked run/bundle/script artifacts, including [docs/plans/2026-02-24-iterative-debug-supervisor-contract.md](/root/ebm-online-rl-prototype/docs/plans/2026-02-24-iterative-debug-supervisor-contract.md) and [memory/](/root/ebm-online-rl-prototype/memory/)).
+- Command: `cd /root/ebm-online-rl-prototype && git diff --stat` (reports 5 files changed, 1997 insertions, 204 deletions).
+- Key generated/untracked artifacts visible in status: [MUJOCO_LOG.TXT](/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT), [gpt_pro_bundle_20260221.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221.zip), [gpt_pro_bundle_20260221b.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221b.zip), [gpt_pro_handoff_bundle_20260220.zip](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip), [gpt_pro_handoff_bundle_20260220/](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220/).
+
+### Next steps
+- Resolve the three explicit blockers: exact attached-plan source, exact `relay-long-task-callback` command/interface for this repo, and whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` must be recreated.
+- Run syntax/help/smoke verification for newly adjusted experiment/eval scripts before any long launch.
+- Execute the end-to-end mini pipeline with callback-enabled monitoring (short run per family), then fix schema/analysis mismatches found.
+- Launch full validation experiments one-by-one with callback workflow after mini pipeline passes.
+- Append evidence-backed updates to [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md) and [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) after each run completion.
+
+## 2026-02-24T12:49:21+08:00
+<!-- meta: {"type":"goal-inpaint-k50-ablation","task_id":"user-k50-check","run_id":"goal_inpaint_ablation_step65000_k50","parent_run_id":"overnight_gap_hypothesis_overlapfix_20260224-095558","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Ran a targeted high-confidence ablation at `goal_inpaint_steps=50` (matched checkpoint/pair/eval protocol) to test the user hypothesis before broader K-sweep decisions.
+- Packaged exact author-stack and online-RL conditioning code excerpts for Discord sharing.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H13: If wider terminal anchoring is the key EqNet lever, increasing K from 25 to 50 should improve EqNet success at the same checkpoint/protocol.
+
+### Exact command(s) run
+```bash
+python <inline> (author_gap eval_pair @ step65000, pair T0->T1, K=50, n=16x8 for UNet/EqNet) -> .../goal_inpaint_ablation_step65000_k50.json
+```
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000_k50.json`
+- `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/author_goal_suffix_code_20260224.txt`
+
+### Results (observed)
+- Matched protocol (`sampling_steps=64`, `n_exec_steps=44`, `timeout=200`, `temperature=0.5`, `num_envs=16`, `num_episodes=8`, checkpoint step65000, pair `T0->T1`):
+  - UNet @K=50: `0.71875` (`92/128`)
+  - EqNet @K=50: `0.87500` (`112/128`)
+- Comparison to prior K ablation at same checkpoint/protocol:
+  - EqNet: `K=25 -> K=50`: `0.890625 -> 0.875000` (`-0.015625`)
+  - UNet: `K=25 -> K=50`: `0.578125 -> 0.718750` (`+0.140625`)
+  - EqNet still far above `K=1` baseline (`0.0000`), so narrow-anchor brittleness remains supported.
+
+### Interpretation
+- The “make K larger first” screen does not improve EqNet over K=25 here; EqNet is roughly flat/slightly down at K=50.
+- This weakens any monotonic “bigger K always better for EqNet” claim and suggests a non-monotonic dependence on terminal-anchor width.
+
+### Decision
+- Keep K=25 as the best observed EqNet anchor among tested high-confidence points (`K=1,25,50`) at step65000 under this protocol.
+- If further discrimination is needed, next sweep should prioritize `K in {10,20,30,40}` for EqNet only before rerunning UNet.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step65000_k50.json')
+print(json.dumps(json.loads(p.read_text()), indent=2))
+PY
+```
+
+## 2026-02-24T14:16:30+08:00
+<!-- meta: {"type":"goal-inpaint-dense-grid","task_id":"inject-k-grid-broaden","run_id":"goal_inpaint_ablation_step80000_dense_kgrid_n32","parent_run_id":"overnight_gap_hypothesis_overlapfix_20260224-095558","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Replanned per `/inject` and ran a denser `goal_inpaint_steps` ablation at latest checkpoints to measure inference sensitivity beyond `{1,2,5}`.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H14: EqNet inference success has a sharp dependence on inpaint width `K`; very small `K` should collapse performance, with recovery over a wider `K` band.
+
+### Exact command(s) run
+```bash
+python <inline> (step80000 dense K-grid eval on pair T0->T1, K={1,2,3,5,8,10,12,15,20,25,30,40,50,64}, n=32/model/K) -> .../goal_inpaint_ablation_step80000_dense_kgrid_n32.{json,csv}
+```
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step80000_dense_kgrid_n32.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step80000_dense_kgrid_n32.csv`
+
+### Results (observed)
+- Focus values requested by user (`step80000`, latest checkpoints):
+  - `K=1`: UNet `0.9062` (`29/32`), EqNet `0.0000` (`0/32`)
+  - `K=2`: UNet `0.9375` (`30/32`), EqNet `0.0000` (`0/32`)
+  - `K=5`: UNet `0.9688` (`31/32`), EqNet `0.5938` (`19/32`)
+- Dense-grid highlights (same protocol):
+  - EqNet best in this scan: `K=20`, `0.9062` (`29/32`)
+  - UNet best in this scan: `K=3/8/10/12`, `1.0000` (`32/32`)
+  - EqNet remains near-zero for very small anchors (`K<=3`), then recovers strongly by `K=8..20`.
+
+### Interpretation
+- The latest-checkpoint run confirms the earlier claim was not a premature-training artifact: `K` is a critical hyperparameter for EqNet in this setup.
+- EqNet response is strongly non-monotonic in `K` (collapse at small `K`, recovery at moderate `K`, mixed behavior at larger `K`).
+
+### Decision
+- Promote a two-stage follow-up: keep dense quick scans for shape, then rerun a narrowed band with high-confidence `n=128`.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step80000_dense_kgrid_n32.json')
+print(json.dumps(json.loads(p.read_text())['best_by_arch'], indent=2))
+PY
+```
+
+## 2026-02-24T14:34:08+08:00
+<!-- meta: {"type":"goal-inpaint-highconf-kgrid","task_id":"user-highconf-kgrid-followup","run_id":"goal_inpaint_ablation_step80000_highconf_kgrid_n128","parent_run_id":"overnight_gap_hypothesis_overlapfix_20260224-095558","commit":"328ac6e","dirty":true} -->
+
+### Scope
+- Ran the requested high-confidence follow-up at latest checkpoints (`step80000`) for a narrowed `K` grid to validate the low-K collapse and medium-K recovery with larger sample count.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: master
+- Commit: 328ac6e (dirty: yes)
+
+### Hypothesis tested
+- H15: At latest checkpoints, EqNet remains highly sensitive to terminal-anchor width `K`; small `K` should fail while moderate `K` should recover under higher-confidence sampling.
+
+### Exact command(s) run
+```bash
+python <inline> (step80000 high-confidence K-grid eval on pair T0->T1, K={1,2,5,8,10,20}, n=16x8=128/model/K) -> .../goal_inpaint_ablation_step80000_highconf_kgrid_n128.{json,csv}
+```
+
+### Output artifacts
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step80000_highconf_kgrid_n128.json`
+- `.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step80000_highconf_kgrid_n128.csv`
+
+### Results (observed)
+- `K=1`: UNet `0.960938` (`123/128`), EqNet `0.000000` (`0/128`), delta `-0.960938`
+- `K=2`: UNet `0.960938` (`123/128`), EqNet `0.000000` (`0/128`), delta `-0.960938`
+- `K=5`: UNet `1.000000` (`128/128`), EqNet `0.578125` (`74/128`), delta `-0.421875`
+- `K=8`: UNet `0.992188` (`127/128`), EqNet `0.789062` (`101/128`), delta `-0.203125`
+- `K=10`: UNet `0.992188` (`127/128`), EqNet `0.945312` (`121/128`), delta `-0.046875`
+- `K=20`: UNet `0.937500` (`120/128`), EqNet `0.867188` (`111/128`), delta `-0.070312`
+- Best in this run: UNet at `K=5` (`1.0000`), EqNet at `K=10` (`0.9453`).
+
+### Interpretation
+- The low-K EqNet collapse is confirmed under higher confidence (`K=1,2 -> 0/128`), but at `step80000` EqNet is still below UNet for all tested `K` in this narrowed high-confidence grid.
+- This does **not** imply EqNet is globally inferior across checkpoints: previous high-confidence matched-checkpoint eval at `K=25` showed EqNet > UNet at steps `55000` and `65000`.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype
+python3 - <<'PY'
+import json
+from pathlib import Path
+p=Path('.worktrees/eqnet-maze2d/runs/analysis/author_repo_zero_step/overnight_gap_hypothesis_overlapfix_20260224-095558/goal_inpaint_ablation_20260224/goal_inpaint_ablation_step80000_highconf_kgrid_n128.json')
+print(json.dumps(json.loads(p.read_text())['best_by_arch'], indent=2))
+PY
+```
+
+## 2026-02-24T15:13:51+08:00
+### Scope
+- Re-ran relay callback e2e smoke-gate canary and re-validated state/cleanup artifacts.
+
+### Verification
+- New canary run directory: `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-151240`
+- `state.json` status: `success`
+- Smoke cleanup contract: `cleanup_smoke_policy=keep_manifest_only`, `smoke_cleanup.action=deleted_smoke_run_dir_kept_manifest`
+- `smoke_manifest.json` present with `2` entries; smoke run dir removed; full run dir present.
+- `gate.out.log` shows smoke/full passed; `gate.err.log` size is `0`.
+
+### Exact command(s) run
+- `python3 scripts/stage0_smoke_gate.py ... --cleanup-smoke-policy keep_manifest_only -> tmp/relay_callback_e2e/relay_e2e_20260224-151240/`
+- `python3 (artifact/status checks) -> ALL_OK=1`
+
+### Evidence paths
+- `/tmp/relay_callback_e2e_last_path.txt`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-151240/state.json`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-151240/gate.out.log`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-151240/gate.err.log`
+- `/root/ebm-online-rl-prototype/tmp/relay_callback_e2e/relay_e2e_20260224-151240/smoke_manifest.json`
+
+### Current run state
+- Callback e2e contract check is passing for the latest canary run.
+
+## 2026-02-24T16:08:00+08:00
+<!-- meta: {"type":"gpt-pro-bundle","task_id":"user-bundle-request","run_id":"gpt_pro_bundle_20260224","commit":"5ac5e48","dirty":true} -->
+
+### Scope
+Prepared a GPT-Pro handoff package with file-backed experiment summaries and implementation manifests; committed implementation/report artifacts to a dedicated analysis branch.
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: analysis/results-2026-02-24
+- Commit: 5ac5e48 (dirty: yes)
+
+### Exact command(s) run
+```bash
+git checkout -b analysis/results-2026-02-24
+git add <implementation/report files> && git commit -m "feat: package GPT-Pro handoff artifacts and implementation scripts (2026-02-24)"
+```
+
+### Output artifacts
+- `GPT_PRO_HANDOFF_20260224.md`
+- `GPT_PRO_IMPLEMENTATION_FILES_20260224.txt`
+- `GPT_PRO_SUMMARY_METRICS_20260224.json`
+- `docs/plans/2026-02-24-iterative-debug-supervisor-contract.md`
+- `scripts/{discord_score_poster.py,discord_swap_matrix_monitor.py,eval_synth_maze2d_checkpoint_goal_suffix.py,launch_all_experiments.sh,resume_after_eqnet.sh,stage0_smoke_gate.py}`
+
+### Results (observed)
+- Handoff report now includes verified summaries for: Maze2D ablation grid, locomotion condition comparisons, EqNet-vs-UNet 3-seed, author-repo continuation checkpoints, goal-inpaint K diagnostics, and ongoing online goal-suffix pilot status.
+- Snapshot status in report: goal-suffix online pilot has partial completion with pending rows still running.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype
+git push -u origin analysis/results-2026-02-24
+```
