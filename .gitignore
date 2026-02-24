@@ -22,3 +22,6 @@ third_party/
 
 # Vendored venvs (if third_party/ is unignored in the future)
 third_party/**/.venv*/
+
+# Local git worktrees (isolated feature branches)
+.worktrees/

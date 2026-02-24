@@ -120,3 +120,33 @@ Project: /root/ebm-online-rl-prototype
 - Interpretation:
   - Diffuser's conservative magnitude is not primarily a clipping bug/artifact.
   - It is more consistent with method-level behavior (planner objective + denoising policy + control cadence effects).
+
+7) GPT Pro ablation grid review (2026-02-22, deferred for later action)
+Source: GPT Pro analysis of 2026-02-21b experiment bundle
+Status: DEFERRED — revisit after current online self-improvement experiments complete
+
+Key issues found in prior ablation grid experiments:
+a) Threshold confusion: grid_v1 "63.9% success" used ~0.5 threshold (coarse progress);
+   grid_v2 uses 0.2 (strict). The +11pp gain was mostly about "getting close," not truly reaching the goal.
+   Under strict 0.2 threshold, best Diffuser only improves +2.8pp over baseline.
+b) RNG contamination: SAC baseline in analyze_collector_stochasticity.py shares RNG stream
+   with Diffuser. SAC results vary across Diffuser conditions (0.5556 → 0.6944 in grid_v2),
+   invalidating "gap closed by X%" conclusions.
+c) Too few rollouts: 36 per condition (6 queries × 6 rollouts). A +5.6pp improvement
+   is just +2 extra successes — easily noise.
+d) EMA + adaptive replan negative interaction: At alpha=1.0, each helps alone (+2.8pp)
+   but together they hurt (-5.6pp). Adaptive trigger fires too aggressively with
+   EMA-smoothed progress signals.
+e) Action scaling saturation: alpha=1.4 causes 53% clip fraction.
+
+Proposed fix order (by GPT Pro):
+  E0: Fix RNG isolation (must-do before any SAC comparison is valid)
+  E1: Report success at multiple thresholds (0.5/0.2/0.1) simultaneously
+  E2: Add control diagnostics (num_replans, adaptive_triggers, wall_hits, action_l2)
+  E3: Replan cadence sweep (hypothesized as biggest real factor)
+  E4: Near-goal tighter control heuristic (replan_every=1 when dist<0.5)
+  E5: Re-run small ablation with bigger eval budget (~200 rollouts)
+  E6: Only then: multi-seed swap matrix with best collector config
+
+Full GPT Pro report:
+  /root/.codex-discord-relay/instances/claude/uploads/discord_1472061022239195304_thread_1474255599117271162/attachments/1771743705816_e6ab3cae_DIFFUSER_NEW_RESULTS_REVIEW_NEXT_STEPS_20260221b.txt

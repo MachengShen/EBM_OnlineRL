@@ -313,9 +313,6 @@ def main() -> int:
         "goal_success_threshold": 0.2,
         "eval_rollout_horizon": 32 if args.smoke else 256,
         "eval_rollout_replan_every_n_steps": 4 if args.smoke else 16,
-        # Avoid privileged maze-layout-aware candidate selection in default comparisons.
-        "wall_aware_planning": False,
-        "wall_aware_plan_samples": 1,
         "eval_success_prefix_horizons": ",".join(str(x) for x in prefixes),
         "save_checkpoint_every": 0 if args.smoke else 5000,
     }
@@ -323,6 +320,10 @@ def main() -> int:
         "n_diffusion_steps": 16 if args.smoke else 64,
         "model_dim": 32 if args.smoke else 64,
         "model_dim_mults": "1,2" if args.smoke else "1,2,4",
+        # Avoid privileged maze-layout-aware candidate selection in default comparisons.
+        # These args only exist in the Diffuser probe script, not the SAC probe script.
+        "wall_aware_planning": False,
+        "wall_aware_plan_samples": 1,
     }
 
     env = _base_env(root)
