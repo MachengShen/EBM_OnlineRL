@@ -3413,3 +3413,20 @@ cat runs/.../noher_budgetmatch_20260225-022453/noher_vs_her_summary.{json,csv}
 ### Evidence
 - Ambiguous tags in run artifacts: `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_budgetmatch_summary.csv` (`eqm_k25_s010_budgetmatch`, `eqm_k25_s008_budgetmatch`).
 - Actual parameter definitions in script/config: `scripts/synthetic_maze2d_diffuser_probe.py` (`--eqm_steps`, `--eqm_step_size`) and `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_k25_s010_budgetmatch/config.json`.
+
+## 2026-02-25T10:xx+08:00
+<!-- meta: {"type":"commit+push","commit":"f3dd2f9","branch":"analysis/results-2026-02-24"} -->
+
+### Scope
+- Committed and pushed all EqM/CRL experiment changes to remote.
+
+### Exact command(s) run
+```bash
+git add ebm_online_rl/online/eqm.py scripts/run_crl_maze2d_fair_budget.py [7 other files] && git commit && git push origin analysis/results-2026-02-24
+```
+
+### Result
+- Commit: `f3dd2f9` — feat: add EqM module + CRL fair-budget launcher; update probe scripts and memory artifacts
+- Branch pushed: `analysis/results-2026-02-24` -> `origin/analysis/results-2026-02-24`
+- Files committed: `ebm_online_rl/online/eqm.py` (new), `scripts/run_crl_maze2d_fair_budget.py` (new), `ebm_online_rl/online/__init__.py`, `scripts/online_pointmass_goal_diffuser.py`, `scripts/synthetic_maze2d_diffuser_probe.py`, `scripts/synthetic_maze2d_gcbc_her_probe.py`, `scripts/synthetic_maze2d_sac_her_probe.py`, `HANDOFF_LOG.md`, `docs/WORKING_MEMORY.md`
+- Not committed (untracked bundles/logs): `gpt_pro_bundle_*.zip`, `gpt_pro_handoff_bundle_*.zip`, `memory/`, `MUJOCO_LOG.TXT`
