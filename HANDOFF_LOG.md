@@ -4041,3 +4041,52 @@ git push origin analysis/results-2026-02-24
 ```bash
 cd /root/ebm-online-rl-prototype && unzip -l /root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_debug_bundle_20260225.zip
 ```
+
+## 2026-02-25T18:10:00Z
+<!-- meta: {"type":"experiment_complete","artifact":"runs/analysis/eqm_locality_h2_20260225-175359","dirty":true} -->
+
+### Scope
+EqM research validation experiments (H1, H2, H3) on Maze2D umaze. Three hypotheses tested per the CODEX_EQM_RESEARCH_VALIDATION_PLAN_MAZE2D_FIRST_20260225.txt proposal, corrected for codebase caveats identified during architecture audit.
+
+### Scripts created
+- `scripts/maze2d_eqm_utils.py` — shared loader/utilities for all analysis scripts
+- `scripts/analysis_eqm_locality_map_maze2d.py` — H2 locality experiment
+- `scripts/eval_maze2d_waypoint.py` — H3 waypoint compositionality (pos_only + pos_and_zero_vel modes)
+- `scripts/analysis_eqm_maze2d_dyn_residual_alignment.py` — H1 dynamics alignment
+- `ebm_online_rl/models/forward_dynamics.py` — ForwardDynamics MLP module
+- `CLAUDE_EQM_RESEARCH_ANALYSIS_20260225.md` — architecture audit with caveats
+
+### Architecture audit caveats found (before implementation)
+1. Proposal mixed up two parallel pipelines (Maze2D = `[act|obs]` packing, PointMass = `[obs|act]`)
+2. Denoiser needs 3-arg call: `model(x, {}, t0)` not `model(x, t0)`
+3. H3 waypoint support partially existed; no new conditioning infra needed
+4. `get_replay_observations` included zero-padded buffer entries → fixed by filtering pos>0
+
+### Results
+
+**H2 Locality (VJP influence profile, n=256 probes):**
+- Peak influence at offset 0: 0.995 (nearly all influence is local)
+- Half-decay offset: 1 (drops to 0.049 at offset 1)
+- Offset 5: 0.038, Offset 10: 0.030, Offset 32: 0.020
+- Conclusion: STRONGLY SUPPORTED — EqM vector field is extremely local, acting as near-pointwise correction
+- Artifact: `runs/analysis/eqm_locality_h2_20260225-175359/`
+
+**H3 Waypoint Compositionality (100 trials, eps=0.5):**
+- pos_only: wp_hit=1.000, goal_hit=1.000, joint=1.000
+- pos_and_zero_vel: wp_hit=1.000, goal_hit=1.000, joint=1.000 (identical)
+- no_waypoint baseline: wp_hit=0.040, goal_hit=1.000, joint=0.040
+- Conclusion: SUPPORTED — EqM perfectly composes test-time waypoint constraints. Both modes identical (velocity constraint irrelevant under position clamping).
+- Artifact: `runs/analysis/eqm_waypoint_h3_v2/`
+
+**H1 MPC-like Descent (ForwardDynamics 20k steps, alignment n=256):**
+- Overall cosine sim: mean=0.458, median=0.484
+- State-only cosine sim: -0.005 (no alignment)
+- Action-only cosine sim: 0.752 (strong alignment)
+- Descent fraction (single step): 0.219 (weak at equilibrium)
+- BUT: J_dyn trajectory plot shows MASSIVE monotonic descent from ~10 → ~0 across 25 EqM steps
+- Conclusion: PARTIALLY SUPPORTED — EqM refinement reduces dynamics residual dramatically over full trajectory, but single-step gradient alignment is weak near equilibrium (gradient is tiny). Action correction strongly aligned, state correction not.
+- Artifact: `runs/analysis/eqm_dyn_alignment_h1_20260225-175408/`
+
+### Repo state
+- Branch: `analysis/results-2026-02-24`
+- Dirty: yes (new scripts + results not yet committed)
