@@ -974,3 +974,332 @@ cd /root/ebm-online-rl-prototype && bash runs/analysis/synth_maze2d_diffuser_pro
 - 6 scripts deleted: `agentic_maze2d_autodecider.py`, `agentic_role_orchestrator.py`, `launch_agentic_maze2d_autodecider_tmux.sh`, `launch_agentic_role_orchestrator_tmux.sh`, `overnight_maze2d_autodecider.py`, `launch_overnight_maze2d_autodecider_tmux.sh`.
 - Reason: relay auto-ML pipeline fully supersedes these. Git history preserves them.
 - HEAD now: `d58e8eb` (clean), pushed to `origin/analysis/results-2026-02-24`.
+
+## PointMass rollout visual debug (2026-02-25)
+- New visual diagnostics from latest checkpoint:
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_step10000_rollout_trajectories_grid.png`
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_step10000_rollout_distance_traces.png`
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_step10000_rollout_debug_summary.json`
+- Diagnostic readout (`step_10000`, 12 replayed eval episodes, threshold `0.2`):
+  - `mean_min_dist=0.1232`, `mean_final_dist=0.9581`, `success_rate=0.8333`, `rebound_after_hit=8/12`.
+- Current interpretation:
+  - The large min-vs-final gap is due to trajectory rebound: the planner often reaches near-goal mid-episode but does not stay there through the episode end.
+
+## PointMass loss-curve diagnostics (2026-02-25)
+- Added active-run loss plot and summary:
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_loss_curve_step_latest.png`
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_loss_curve_summary.json`
+- Current readout (`env_steps=17850`):
+  - train loss decreases (`8.9446 -> 7.5094`) while validation loss increases (`0.5694 -> 4.1889`).
+  - latest eval checkpoint in metrics: `eval_success_rate=0.62 @15000`.
+- Success-definition mismatch evidence (`step_10000` rollout replay, `12` episodes, threshold `0.2`):
+  - min-distance success `10/12` vs final-distance success `2/12`.
+- Implication:
+  - Current `eval_success_rate` (min-distance criterion) is optimistic for trajectory quality; final-distance-based metrics should be added for control-stability reporting.
+
+## PointMass loss-plot root-cause check (2026-02-25)
+- Added aligned plot to diagnose early val << train artifact:
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_loss_curve_aligned_paired_only.png`
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_loss_curve_aligned_summary.json`
+- Key evidence:
+  - burn-in already ran before online rows (`burnin_loss=0.5996`), so early low val is not "without training".
+  - first finite val row at `550`; first finite train row at `1000` (timing mismatch in raw curve).
+  - paired rows still show large negative gap, consistent with train/val distribution mismatch (dynamic replay vs tiny fixed holdout).
+
+## 2026-02-25T11:41:53+08:00
+### PointMass val-source alignment fix (user-requested bug fix)
+- Code change in `scripts/online_pointmass_goal_diffuser.py`:
+  - Added `--val_source {replay,warmup_holdout}` (default: `replay`).
+  - Validation now defaults to sampling from the same online replay distribution as training.
+  - Post-warmup scheduling now aligns first `val_loss` timestamp with the first post-warmup train cadence (`next_val = env_steps + val_every`).
+  - Added logging fields: `val_source`, `num_episodes_in_val_replay`.
+
+### Smoke evidence
+- Replay default smoke run:
+  - `runs/analysis/pointmass_val_source_align_smoke_20260225-113140/`
+  - first finite `train_loss` and `val_loss` both at `env_steps=1020` (`8.1101`, `9.0637`), `val_source=replay`.
+- Legacy compatibility smoke run:
+  - `runs/analysis/pointmass_val_source_holdout_compat_smoke_20260225-113802/`
+  - first finite pair at `env_steps=1020`, with classic negative gap retained (`val=0.6965`, `train=7.0313`, gap `-6.3348`) under explicit `--val_source warmup_holdout`.
+
+### Current decision
+- Treat replay-sourced validation as canonical default for ongoing pointmass online runs.
+- Keep warmup-holdout mode only for explicit ablation/debug comparison.
+
+## 2026-02-25T12:19:35+08:00
+### PointMass unbounded-state + eval-distance filtered rerun (user /inject)
+- Implemented experiment-setting knobs for the user suggestion:
+  - `PointMass2D`: added `unbounded_state_space` + `state_sample_std` sampling mode.
+  - `online_pointmass_goal_diffuser.py`: added `--state_limit`, `--unbounded_state_space`, `--state_sample_std`, `--eval_min_start_goal_dist`, `--eval_max_start_goal_dist`.
+  - Evaluation (`eval_goal_mode=random`) now enforces start-goal distance in configured range.
+
+### New run (updated setting)
+- Run root:
+  - `runs/analysis/pointmass_unbounded_evaldist_20260225-120517/eqm_k25_s010_unbounded_std1p0_evald05_15_seed0/`
+- Config summary:
+  - `unbounded_state_space=true`, `state_sample_std=1.0`
+  - `eval_min_start_goal_dist=0.5`, `eval_max_start_goal_dist=1.5`
+  - `val_source=replay`, `success_threshold=0.2`, EqM `K=25`, `S=0.1`
+
+### Latest readout
+- First completed eval checkpoint (`env_steps=3000`, `n_eval_episodes=30`):
+  - `eval_success_rate=0.4333`
+  - `eval_final_dist_mean=1.5202`
+  - `eval_min_dist_mean=0.2780`
+- Artifacts:
+  - `.../config.json`
+  - `.../metrics.jsonl`
+  - `.../checkpoints/step_3000.pt`
+
+### Operational note
+- This run was stopped after the first completed eval checkpoint to return fast feedback and avoid waiting on long eval sweeps in-thread.
+
+### Current decision
+- Keep this protocol available as the new stricter debug setting (unbounded sampling + distance-filtered eval).
+- If accepted, rerun full horizon and/or multi-seed under this exact config for stable comparison.
+
+## 2026-02-25T12:22:41+08:00
+### Task t-0010: parse long PointMass EqM run + baseline comparison
+
+### Algorithm glossary
+- `K := eqm_steps` = number of EqM refinement iterations per planning call.
+- `S := eqm_step_size` = per-iteration EqM descent step size.
+- `success_threshold := 0.2` = success distance criterion in this run.
+
+### Parsed artifacts
+- Target run:
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_20260225-1015/metrics.jsonl`
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_20260225-1015/config.json`
+- Baseline reference:
+  - `runs/analysis/pointmass_eqm_minchange_20260224-230943/eqm_vs_diffusion_compare_summary.json`
+- New parse artifact:
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_20260225-1015/t0010_eval_summary.json`
+
+### Checkpointed eval_success_rate trajectory
+- `5000: 0.56`
+- `10000: 0.68`
+- `15000: 0.62`
+- `20000: 0.60`
+- `25000: 0.72` (best)
+- `30000: 0.56`
+- `35000: 0.54`
+- `40000: 0.42` (latest eval)
+
+### Final/terminal metrics (latest finite rows)
+- Run target in config: `total_env_steps=50000`; last logged row: `env_steps=43000`.
+- At `env_steps=43000`:
+  - `train_loss=5.5720`, `val_loss=1.9780`, `train_val_gap=-3.5940`
+  - `episode_final_dist=1.1407`, `episode_min_dist=0.1610`, `episode_success=1.0`
+  - `num_episodes_in_replay=856`
+
+### Comparison vs older EqM-vs-Diffusion summary
+- Baseline (`eqm_vs_diffusion_compare_summary.json`):
+  - EqM smoke-2k: `0.10`
+  - EqM long-6k last: `0.15`
+  - Diffusion long-6k last: `0.05`
+- Current run deltas:
+  - Latest eval `0.42`: `+0.32` vs EqM smoke-2k; `+0.27` vs EqM long-6k last; `+0.37` vs Diffusion long-6k last.
+  - Best eval `0.72`: `+0.62` vs EqM smoke-2k; `+0.57` vs EqM long-6k last; `+0.67` vs Diffusion long-6k last.
+
+### Current decision
+- Treat this as a partial long-run readout with clear mid-run peak (`0.72 @ 25k`) and late-checkpoint drop (`0.42 @ 40k`), not a completed 50k endpoint.
+- Continue comparisons using replay-sourced validation (`--val_source replay`) for aligned train/val distribution.
+
+
+## 2026-02-25T04:27:37.608Z
+### Objective
+- Continue the `analysis/results-2026-02-24` validation cycle: finalize callback-ready experiment/eval/analyze scripts, run mini pipeline verification, then launch full validation runs with memory/handoff updates after each completion.
+
+### Changes
+- Tracked modified files: [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md), [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md), [ebm_online_rl/envs/pointmass2d.py](/root/ebm-online-rl-prototype/ebm_online_rl/envs/pointmass2d.py), [scripts/online_pointmass_goal_diffuser.py](/root/ebm-online-rl-prototype/scripts/online_pointmass_goal_diffuser.py).
+- Diffstat snapshot: `4 files changed, 515 insertions(+), 13 deletions(-)`.
+- Untracked artifacts/logs present: [MUJOCO_LOG.TXT](/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT), [gpt_pro_bundle_20260221.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221.zip), [gpt_pro_bundle_20260221b.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221b.zip), [gpt_pro_bundle_20260224_full.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full.zip), [gpt_pro_bundle_20260224_full/](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full/), [gpt_pro_handoff_bundle_20260220.zip](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip), [gpt_pro_handoff_bundle_20260220/](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220/), [memory/](/root/ebm-online-rl-prototype/memory/).
+- Task counters: `pending=0`, `running=0`, `done=8`, `failed=0`, `blocked=2`, `canceled=0`.
+
+### Evidence
+- Command/state snapshot provided from `/root/ebm-online-rl-prototype` on branch `analysis/results-2026-02-24`.
+- `git status --porcelain=v1` shows 4 tracked modified files and 8 untracked artifact/log entries.
+- `git diff --stat` reports the 515/13 line delta with largest additions in handoff/memory docs plus pointmass/diffuser code edits.
+- Plan tail indicates remaining flow around steps `8` to `15`: SAC/HER probe verification, eval/exp/analyze script alignment, mini pipeline run, mismatch fixes, and full callback-launched validations.
+- Open blocker questions captured: exact attached plan content/path, exact `relay-long-task-callback` interface for this repo, and whether to recreate `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`.
+
+### Next steps
+- Resolve the 3 open blocker questions first to clear the 2 blocked tasks.
+- Execute remaining plan items in order starting with step 8 (`scripts/synthetic_maze2d_sac_her_probe.py` syntax/help/smoke verification), then steps 9-15.
+- After each run completion, append evidence-backed results to [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) and refresh [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md).
+- Decide whether untracked bundle/log artifacts should be retained, moved, ignored, or versioned before any commit/push.
+
+## 2026-02-25T13:38:00+08:00
+### PointMass dynamics ablation: first-order vs double-integrator (completed)
+
+### Algorithm glossary
+- `K := eqm_steps` = EqM refinement iterations per planning call.
+- `S := eqm_step_size` = EqM per-iteration descent step size.
+- `dt := double_integrator_dt` = integration timestep for second-order pointmass.
+
+### Code updates
+- `ebm_online_rl/online/planner.py`
+  - waypoint mode now supports second-order state layout (`obs_dim == 2 * act_dim`) by deriving acceleration from predicted next velocity.
+  - waypoint action is clipped to `[-action_scale, action_scale]`.
+- `scripts/online_pointmass_goal_diffuser.py`
+  - added `--dynamics_model`, `--double_integrator_dt`, `--initial_velocity_std`.
+  - train/eval env constructors now receive dynamics settings.
+  - eval random start-goal sampling now uses `sample_state` for start and env `goal_distance` filtering.
+  - rollout min-distance initialization now uses env `goal_distance` (position-only semantics in DI).
+- `ebm_online_rl/envs/pointmass2d.py`
+  - default `double_integrator_dt` updated to `0.1` (from `1.0`) for stable scale under current episode/action limits.
+
+### Run root
+- `runs/analysis/pointmass_dynamics_ablation_20260225-131440/`
+
+### Key artifacts
+- Smokes:
+  - `.../smoke/smoke_v3/first_order/`
+  - `.../smoke/smoke_v3/double_integrator/`
+- Matched-budget compare:
+  - `.../smoke/compare_12k/first_order_k25_s010/` (stopped manually at `env_steps=6400`)
+  - `.../smoke/compare_12k/double_integrator_k25_s010_dt010/` (`env_steps=6400` complete)
+- Summary/plot:
+  - `.../smoke/compare_12k/dynamics_ablation_summary.json`
+  - `.../smoke/compare_12k/dynamics_ablation_compare.png`
+
+### Shared-checkpoint comparison (`n_eval_episodes=30`)
+- `env_steps=3000`:
+  - first-order `eval_success_rate=0.1667`
+  - double-integrator `eval_success_rate=0.0000`
+- `env_steps=6000`:
+  - first-order `eval_success_rate=0.2000`
+  - double-integrator `eval_success_rate=0.0000`
+
+### Current interpretation
+- Under current EqM planner/training settings, adding velocity-state double-integrator dynamics did not improve pointmass success and underperformed first-order at matched checkpoints.
+- The DI dynamics required stabilization fixes (`dt=0.1`, waypoint action clipping); after stabilization, control quality remained weaker than first-order in this run.
+
+### Next discriminating step
+- Keep everything fixed and test DI with non-zero initial velocity diversity:
+  - `--initial_velocity_std 0.1` (and optionally `0.2`) at 12k+ budget, then compare against the same first-order baseline checkpoints.
+
+## 2026-02-25T14:11:00+08:00
+### Task t-0011: replay-val long-run parse vs t0010 reference (completed)
+
+### Algorithm glossary
+- `K := eqm_steps` = EqM refinement iterations per planning call.
+- `S := eqm_step_size` = EqM per-iteration descent step size.
+
+### Parsed artifacts
+- Replay-val run:
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_replayval_20260225/metrics.jsonl`
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_replayval_20260225/config.json`
+- Reference summary:
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_20260225-1015/t0010_eval_summary.json`
+- New t-0011 output:
+  - `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_replayval_20260225/t0011_replayval_analysis_summary.json`
+
+### Current readout
+- Replay-val run status:
+  - `rows_total=389`, `max_env_steps=19950` (target `50000` not reached)
+  - eval checkpoints only at `5000`, `10000`, `15000`
+- Train/val trend at eval checkpoints:
+  - `5000`: train `9.6899`, val `9.9320`
+  - `10000`: train `8.3194`, val `8.8747`
+  - `15000`: train `7.7966`, val `7.3637`
+- Latest finite paired losses:
+  - `train=7.1341`, `val=7.3922` at `env_steps=19500`
+- Eval success:
+  - latest `0.64 @15000`
+  - best `0.82 @5000`
+
+### Post-30k loss question
+- Cannot determine from this run artifact: there are no finite train/val rows at or beyond `30000` (`max_env_steps=19950`).
+
+### Comparison vs t0010
+- Reference (`t0010`) had deeper horizon (`max_env_steps=43000`) with:
+  - latest eval `0.42 @40000`
+  - best eval `0.72 @25000`
+- Replay-val deltas vs reference (non-step-matched, directional only):
+  - latest eval delta: `+0.22` (`0.64 - 0.42`)
+  - best eval delta: `+0.10` (`0.82 - 0.72`)
+
+### Decision
+- Treat replay-val run as a partial early/mid-horizon readout with favorable checkpoint success but insufficient depth to answer post-30k loss behavior.
+- Next discriminating action is to continue/redo replay-val to `>=30000` and reassess loss trend there.
+
+## ${ts}
+### t-0011 correction note
+- Replay-val parse correction: finite paired train/val rows are `38` (`t0011_replayval_analysis_summary.json`), superseding the earlier `39` handoff line.
+
+## 2026-02-25T14:11:55+08:00
+### t-0011 correction note (timestamp fix)
+- Canonical correction time: `2026-02-25T14:11:55+08:00`; replay-val finite paired train/val rows are `38`.
+
+
+## 2026-02-25T06:12:21.524Z
+### Objective
+- Advance the `analysis/results-2026-02-24` validation cycle for Maze2D/PointMass online RL experiments, with callback-ready experiment scripts and continuously updated handoff memory for future agents.
+
+### Changes
+- Repository remains on branch `analysis/results-2026-02-24` with active in-progress working tree.
+- Expanded experiment continuity docs: [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) (`+414`) and [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md) (`+257`).
+- Code changes were made in [ebm_online_rl/envs/pointmass2d.py](/root/ebm-online-rl-prototype/ebm_online_rl/envs/pointmass2d.py) (substantial), [ebm_online_rl/online/planner.py](/root/ebm-online-rl-prototype/ebm_online_rl/online/planner.py) (targeted), and [scripts/online_pointmass_goal_diffuser.py](/root/ebm-online-rl-prototype/scripts/online_pointmass_goal_diffuser.py) (substantial).
+- New untracked artifacts/bundles are present: [MUJOCO_LOG.TXT](/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT), [gpt_pro_bundle_20260221.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221.zip), [gpt_pro_bundle_20260221b.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221b.zip), [gpt_pro_bundle_20260224_full.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full.zip), [gpt_pro_bundle_20260224_full/](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full/), [gpt_pro_handoff_bundle_20260220.zip](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip), [gpt_pro_handoff_bundle_20260220/](/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220/), and [memory/](/root/ebm-online-rl-prototype/memory/).
+- Task board snapshot: `pending=0 running=0 done=9 failed=0 blocked=2 canceled=0`.
+
+### Evidence
+- Workdir/repo root: `/root/ebm-online-rl-prototype`.
+- Command context: `git status --porcelain=v1` reported modified tracked files and untracked artifacts exactly as listed above.
+- Command context: `git diff --stat` reported:
+- `HANDOFF_LOG.md | 414`
+- `docs/WORKING_MEMORY.md | 257`
+- `ebm_online_rl/envs/pointmass2d.py | 86`
+- `ebm_online_rl/online/planner.py | 16`
+- `scripts/online_pointmass_goal_diffuser.py | 171`
+- `5 files changed, 919 insertions(+), 25 deletions(-)`
+- Last recorded plan tail indicates remaining pipeline work on probe verification, experiment scripts, mini end-to-end callback run, mismatch fixes, and full validation launches.
+
+### Next steps
+- Execute remaining plan items 8-15 in order, starting with SAC/HER probe syntax/help/smoke verification and ending with full validation experiment launches plus per-run memory updates.
+- Complete/validate these scripts for callback-ready outputs and robust aggregation: `eval_synthetic_maze2d_sac_her_probe.py`, `eval_synth_maze2d_checkpoint_prefix.py`, `exp_replan_horizon_sweep.py`, `exp_swap_matrix_maze2d.py`, `analyze_posterior_diversity.py`.
+- Run one short end-to-end mini pipeline across experiment families, fix schema/analysis mismatches, then launch full runs one-by-one.
+- Resolve blocked clarifications before full rollout: exact attached plan content/path, exact `relay-long-task-callback` command/interface expected in this repo, and whether to recreate `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`.
+
+## 2026-02-25T16:10:13+08:00
+### PointMass DI vs Maze2D: ranked-cause ablation continuation
+
+### What changed
+- Added `--action_limit` to `scripts/online_pointmass_goal_diffuser.py` and wired it through train/eval env construction.
+- Continued DI ablations in `runs/analysis/pointmass_di_ranked_ablation_20260225-150732/`:
+  - `r3_di_action_posgoal_actionlimit1p0`
+  - `r4_di_action_posgoal_actionlimit1p0_damp1p5_vclip2p0`
+  - `r5_di_longh96_ep192_action01` (partial)
+- Wrote consolidated summary artifacts:
+  - `ranked_ablation_summary_20260225-extended.json`
+  - `ranked_ablation_summary_20260225-final.json`
+
+### Current ablation readout (DI)
+- `r1` (action-mode baseline, action_limit=0.1): success `0.0333 @3k`, `0.0333 @6k`.
+- `r2` (+ replay-goal position-only): no change (`0.0333 @3k`, `0.0333 @6k`).
+- `r3` (+ action_limit=1.0, no damping): success unchanged at `3k` (`0.0333`), severe overshoot (`eval_final_dist_mean=7.0017`).
+- `r4` (+ action_limit=1.0 + damping=1.5 + vclip=2.0): `0.10 @3k` then `0.0333 @6k` (temporary gain, no sustained improvement).
+- `r5` (long horizon only: `h96`, `ep192`, action_limit=0.1): partial to `2880`; logged episodes remained `episode_success=0.0` and showed drift/rebound.
+
+### Maze2D evidence used for causal ranking
+- `.../diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/progress_metrics.csv` (last row):
+  - `rollout_goal_success_rate_h64=0.0`
+  - `rollout_goal_success_rate_h128=0.5`
+  - `rollout_goal_success_rate_h192=0.75`
+  - `rollout_goal_success_rate_h256=0.8333`
+- `.../eqm_vs_existing_baselines_20260225.json`: diffuser reference `h256=0.8333`.
+
+### Ranked likely causes (current evidence)
+1. **Rebound/terminal-stability mismatch under DI control**: repeated min-distance hits with poor final-distance settling; increasing authority alone worsens this.
+2. **Reachability + horizon coupling**: Maze2D success is strongly horizon-dependent (`h64` fails, `h192+` succeeds); current PointMass DI protocol is likely under-horizoned and under-structured.
+3. **Actuator/physics mismatch vs Maze2D**: PointMass DI integration and limits do not yet reproduce Maze2D’s effective damping/friction and control smoothness.
+4. **Goal semantics mismatch (velocity components)**: position-only replay goals alone had negligible effect (r2 ~= r1).
+
+### Current decision
+- Keep `r4` as the best-stabilized DI variant tested so far, but acknowledge no sustained gain at `6k`.
+- Treat long-horizon-only (`r5`) as a negative partial; it needs paired stabilization (damping/authority) to be meaningful.
+
+### Next discriminating run
+- Run long-horizon **with** stabilized high-authority control (combine successful pieces rather than single-factor):
+  - `horizon=96`, `episode_len=192`, `action_limit=1.0`, `double_integrator_velocity_damping=1.5`, `double_integrator_velocity_clip=2.0`, `planner_control_mode=action`, `replay_goal_position_only`.

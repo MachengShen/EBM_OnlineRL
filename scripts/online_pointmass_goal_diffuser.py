@@ -62,6 +62,7 @@ class TrainConfig:
     loss_action_weight: float = 10.0
     loss_discount: float = 1.0
     loss_obs_weight: float = 1.0
+    val_source: str = "replay"
     holdout_episodes: int = 4
     val_every: int = 500
     val_batches: int = 8
@@ -72,6 +73,18 @@ class TrainConfig:
     goal_sampling_p_replay: float = 0.5
     check_conditioning: bool = False
     episode_len: int = 50
+    action_limit: float = 0.1
+    dynamics_model: str = "first_order"
+    double_integrator_dt: float = 0.1
+    initial_velocity_std: float = 0.0
+    double_integrator_velocity_damping: float = 0.0
+    double_integrator_velocity_clip: float = 5.0
+    replay_goal_position_only: bool = False
+    state_limit: float = 1.0
+    unbounded_state_space: bool = False
+    state_sample_std: float = 1.0
+    eval_min_start_goal_dist: float = 0.5
+    eval_max_start_goal_dist: float = 1.5
     success_threshold: float = 0.05
     learning_rate: float = 3e-4
     max_episodes_in_replay: int = 10000
@@ -142,7 +155,19 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--loss_action_weight", type=float, default=TrainConfig.loss_action_weight)
     parser.add_argument("--loss_discount", type=float, default=TrainConfig.loss_discount)
     parser.add_argument("--loss_obs_weight", type=float, default=TrainConfig.loss_obs_weight)
-    parser.add_argument("--holdout_episodes", type=int, default=TrainConfig.holdout_episodes)
+    parser.add_argument(
+        "--val_source",
+        type=str,
+        default=TrainConfig.val_source,
+        choices=("replay", "warmup_holdout"),
+        help="Validation batch source: online replay (default) or fixed warmup holdout.",
+    )
+    parser.add_argument(
+        "--holdout_episodes",
+        type=int,
+        default=TrainConfig.holdout_episodes,
+        help="Used only when --val_source warmup_holdout.",
+    )
     parser.add_argument("--val_every", type=int, default=TrainConfig.val_every)
     parser.add_argument("--val_batches", type=int, default=TrainConfig.val_batches)
     parser.add_argument("--val_batch_size", type=int, default=TrainConfig.val_batch_size)
@@ -162,6 +187,79 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--goal_sampling_p_replay", type=float, default=TrainConfig.goal_sampling_p_replay)
     parser.add_argument("--check_conditioning", action="store_true", default=TrainConfig.check_conditioning)
     parser.add_argument("--episode_len", type=int, default=TrainConfig.episode_len)
+    parser.add_argument(
+        "--action_limit",
+        type=float,
+        default=TrainConfig.action_limit,
+        help="Per-step action bound used by PointMass dynamics and random exploration.",
+    )
+    parser.add_argument(
+        "--dynamics_model",
+        type=str,
+        default=TrainConfig.dynamics_model,
+        choices=("first_order", "double_integrator"),
+        help="PointMass dynamics family.",
+    )
+    parser.add_argument(
+        "--double_integrator_dt",
+        type=float,
+        default=TrainConfig.double_integrator_dt,
+        help="Integration dt used only when --dynamics_model double_integrator.",
+    )
+    parser.add_argument(
+        "--initial_velocity_std",
+        type=float,
+        default=TrainConfig.initial_velocity_std,
+        help="Std-dev for initial velocity sampling in double-integrator mode.",
+    )
+    parser.add_argument(
+        "--double_integrator_velocity_damping",
+        type=float,
+        default=TrainConfig.double_integrator_velocity_damping,
+        help="Per-step linear damping coefficient for DI velocity update (0 disables damping).",
+    )
+    parser.add_argument(
+        "--double_integrator_velocity_clip",
+        type=float,
+        default=TrainConfig.double_integrator_velocity_clip,
+        help="Absolute velocity clip applied in DI mode after each update (must be > 0).",
+    )
+    parser.add_argument(
+        "--replay_goal_position_only",
+        action="store_true",
+        default=TrainConfig.replay_goal_position_only,
+        help="When goals are sampled from replay in DI mode, zero the goal velocity components.",
+    )
+    parser.add_argument(
+        "--state_limit",
+        type=float,
+        default=TrainConfig.state_limit,
+        help="Uniform sampling bound for start/goal when state space is bounded.",
+    )
+    parser.add_argument(
+        "--unbounded_state_space",
+        action="store_true",
+        default=TrainConfig.unbounded_state_space,
+        help="If set, start/goal are sampled from an unbounded Gaussian instead of [-state_limit, state_limit].",
+    )
+    parser.add_argument(
+        "--state_sample_std",
+        type=float,
+        default=TrainConfig.state_sample_std,
+        help="Std-dev for Gaussian start/goal sampling when --unbounded_state_space is set.",
+    )
+    parser.add_argument(
+        "--eval_min_start_goal_dist",
+        type=float,
+        default=TrainConfig.eval_min_start_goal_dist,
+        help="Minimum start-goal distance enforced in evaluation when eval_goal_mode=random.",
+    )
+    parser.add_argument(
+        "--eval_max_start_goal_dist",
+        type=float,
+        default=TrainConfig.eval_max_start_goal_dist,
+        help="Maximum start-goal distance enforced in evaluation when eval_goal_mode=random.",
+    )
     parser.add_argument(
         "--success_threshold",
         type=float,
@@ -237,11 +335,25 @@ def choose_goal(
     replay: EpisodeReplayBuffer,
     rng: np.random.Generator,
     p_replay: float,
+    replay_goal_position_only: bool,
 ) -> np.ndarray:
+    def to_env_goal(raw_goal: np.ndarray) -> np.ndarray:
+        goal = np.asarray(raw_goal, dtype=np.float32).reshape(-1)
+        if env.dynamics_model != "double_integrator":
+            return goal
+        if goal.shape[0] == env.position_dim:
+            return np.concatenate([goal, np.zeros(env.position_dim, dtype=np.float32)], axis=0)
+        if goal.shape[0] != env.obs_dim:
+            raise ValueError(f"Goal dim mismatch: expected {env.obs_dim} (or {env.position_dim}), got {goal.shape[0]}")
+        if replay_goal_position_only:
+            goal = goal.copy()
+            goal[env.position_dim :] = 0.0
+        return goal.astype(np.float32)
+
     use_replay = len(replay) > 0 and rng.random() < p_replay
     if use_replay:
-        return replay.sample_achieved_goal(rng)
-    return env.sample_goal(rng)
+        return to_env_goal(replay.sample_achieved_goal(rng))
+    return to_env_goal(env.sample_goal(rng))
 
 
 @torch.no_grad()
@@ -284,7 +396,7 @@ def rollout_episode(
     states: List[np.ndarray] = [obs.copy()]
     actions: List[np.ndarray] = []
     done = False
-    min_dist = float(np.linalg.norm(obs - goal))
+    min_dist = env.goal_distance(obs, goal)
     final_dist = min_dist
 
     while not done:
@@ -303,6 +415,7 @@ def rollout_episode(
                 device=device,
                 check_conditioning=check_conditioning,
                 control_mode=planner_control_mode,
+                double_integrator_dt=env.double_integrator_dt,
             )
         else:
             raise ValueError(f"Unknown policy mode: {policy_mode}")
@@ -397,13 +510,36 @@ def evaluate(
     n_episodes: int,
     seed: int,
     episode_len: int,
+    action_limit: float,
+    dynamics_model: str,
+    double_integrator_dt: float,
+    initial_velocity_std: float,
+    double_integrator_velocity_damping: float,
+    double_integrator_velocity_clip: float,
+    state_limit: float,
+    unbounded_state_space: bool,
+    state_sample_std: float,
+    eval_min_start_goal_dist: float,
+    eval_max_start_goal_dist: float,
     success_threshold: float,
     eval_goal_mode: str,
     check_conditioning: bool,
     planner_control_mode: str,
     device: torch.device,
 ) -> Dict[str, float]:
-    eval_env = PointMass2D(episode_length=episode_len, success_threshold=success_threshold)
+    eval_env = PointMass2D(
+        episode_length=episode_len,
+        action_limit=action_limit,
+        dynamics_model=dynamics_model,
+        double_integrator_dt=double_integrator_dt,
+        initial_velocity_std=initial_velocity_std,
+        velocity_damping=double_integrator_velocity_damping,
+        velocity_clip=double_integrator_velocity_clip,
+        state_limit=state_limit,
+        unbounded_state_space=unbounded_state_space,
+        state_sample_std=state_sample_std,
+        success_threshold=success_threshold,
+    )
     rng = np.random.default_rng(seed)
     model.eval()
 
@@ -412,8 +548,15 @@ def evaluate(
     successes: List[float] = []
     for _ in range(n_episodes):
         if eval_goal_mode == "random":
+            max_tries = 200
+            start_state = eval_env.sample_state(rng)
             goal = eval_env.sample_goal(rng)
-            start_state = None
+            for _ in range(max_tries):
+                d = eval_env.goal_distance(start_state, goal)
+                if eval_min_start_goal_dist <= d <= eval_max_start_goal_dist:
+                    break
+                start_state = eval_env.sample_state(rng)
+                goal = eval_env.sample_goal(rng)
         elif eval_goal_mode == "reachable_from_random_trajectory":
             start_state, goal = sample_reachable_start_goal_from_random_trajectory(eval_env, rng)
         else:
@@ -476,6 +619,22 @@ def append_jsonl(path: Path, payload: Dict) -> None:
 
 def main() -> None:
     cfg = parse_args()
+    if cfg.eval_min_start_goal_dist < 0.0:
+        raise ValueError("--eval_min_start_goal_dist must be >= 0.")
+    if cfg.eval_max_start_goal_dist < cfg.eval_min_start_goal_dist:
+        raise ValueError("--eval_max_start_goal_dist must be >= --eval_min_start_goal_dist.")
+    if cfg.state_sample_std <= 0.0:
+        raise ValueError("--state_sample_std must be > 0.")
+    if cfg.action_limit <= 0.0:
+        raise ValueError("--action_limit must be > 0.")
+    if cfg.double_integrator_dt <= 0.0:
+        raise ValueError("--double_integrator_dt must be > 0.")
+    if cfg.initial_velocity_std < 0.0:
+        raise ValueError("--initial_velocity_std must be >= 0.")
+    if cfg.double_integrator_velocity_damping < 0.0:
+        raise ValueError("--double_integrator_velocity_damping must be >= 0.")
+    if cfg.double_integrator_velocity_clip <= 0.0:
+        raise ValueError("--double_integrator_velocity_clip must be > 0.")
     set_seed(cfg.seed)
     rng = np.random.default_rng(cfg.seed)
 
@@ -499,9 +658,26 @@ def main() -> None:
     with (logdir / "config.json").open("w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)
 
-    env = PointMass2D(episode_length=cfg.episode_len, success_threshold=cfg.success_threshold)
+    env = PointMass2D(
+        episode_length=cfg.episode_len,
+        action_limit=cfg.action_limit,
+        dynamics_model=cfg.dynamics_model,
+        double_integrator_dt=cfg.double_integrator_dt,
+        initial_velocity_std=cfg.initial_velocity_std,
+        velocity_damping=cfg.double_integrator_velocity_damping,
+        velocity_clip=cfg.double_integrator_velocity_clip,
+        state_limit=cfg.state_limit,
+        unbounded_state_space=cfg.unbounded_state_space,
+        state_sample_std=cfg.state_sample_std,
+        success_threshold=cfg.success_threshold,
+    )
     replay = EpisodeReplayBuffer(obs_dim=env.obs_dim, act_dim=env.act_dim, max_episodes=cfg.max_episodes_in_replay)
-    val_replay = EpisodeReplayBuffer(obs_dim=env.obs_dim, act_dim=env.act_dim, max_episodes=max(cfg.holdout_episodes, 1))
+    use_holdout_val = cfg.val_source == "warmup_holdout"
+    val_replay = (
+        EpisodeReplayBuffer(obs_dim=env.obs_dim, act_dim=env.act_dim, max_episodes=max(cfg.holdout_episodes, 1))
+        if use_holdout_val
+        else None
+    )
 
     transition_dim = env.obs_dim + env.act_dim
     dim_mults = tuple(int(x.strip()) for x in cfg.model_dim_mults.split(",") if x.strip())
@@ -546,7 +722,7 @@ def main() -> None:
     ema_model: TrajectoryModel = copy.deepcopy(model).to(device)
     hard_update_model(ema_model, model)
 
-    probe_obs0 = env.sample_goal(rng)
+    probe_obs0 = env.sample_state(rng)
     probe_goals = np.stack([env.sample_goal(rng) for _ in range(6)], axis=0)
     goal_probe_var = goal_influence_probe(
         model=ema_model if cfg.use_ema_for_planning else model,
@@ -588,18 +764,21 @@ def main() -> None:
             check_conditioning=cfg.check_conditioning,
             planner_control_mode=cfg.planner_control_mode,
         )
-        if len(val_replay) < cfg.holdout_episodes:
+        if use_holdout_val and val_replay is not None and len(val_replay) < cfg.holdout_episodes:
             val_replay.add_episode(ep["states"], ep["actions"])
         else:
             replay.add_episode(ep["states"], ep["actions"])
         env_steps += int(ep["actions"].shape[0])
 
-    print(
+    warmup_msg = (
         f"Warmup done: env_steps={env_steps}, train_episodes={len(replay)}, "
-        f"holdout_episodes={len(val_replay)}, train_can_sample={replay.can_sample(cfg.horizon)}, "
-        f"holdout_can_sample={val_replay.can_sample(cfg.horizon)}",
-        flush=True,
+        f"train_can_sample={replay.can_sample(cfg.horizon)}, val_source={cfg.val_source}"
     )
+    if use_holdout_val and val_replay is not None:
+        warmup_msg += (
+            f", holdout_episodes={len(val_replay)}, holdout_can_sample={val_replay.can_sample(cfg.horizon)}"
+        )
+    print(warmup_msg, flush=True)
     burnin_loss = float("nan")
     if replay.can_sample(cfg.horizon):
         burnin_loss, burnin_updates = train_burst(
@@ -621,6 +800,8 @@ def main() -> None:
         train_updates += burnin_updates
     print(f"Burn-in training done: loss={burnin_loss}", flush=True)
     next_train = env_steps + cfg.train_every
+    if cfg.val_every > 0:
+        next_val = env_steps + cfg.val_every
 
     while env_steps < cfg.total_env_steps:
         goal = choose_goal(
@@ -628,6 +809,7 @@ def main() -> None:
             replay=replay,
             rng=rng,
             p_replay=cfg.goal_sampling_p_replay,
+            replay_goal_position_only=cfg.replay_goal_position_only,
         )
         ep = rollout_episode(
             env=env,
@@ -664,10 +846,16 @@ def main() -> None:
             next_train += cfg.train_every
 
         val_loss = float("nan")
-        if cfg.val_every > 0 and env_steps >= next_val and val_replay.can_sample(cfg.horizon):
+        val_replay_source = val_replay if use_holdout_val else replay
+        if (
+            cfg.val_every > 0
+            and env_steps >= next_val
+            and val_replay_source is not None
+            and val_replay_source.can_sample(cfg.horizon)
+        ):
             val_loss = compute_validation_loss(
                 model=model,
-                replay=val_replay,
+                replay=val_replay_source,
                 rng=rng,
                 batch_size=cfg.val_batch_size,
                 horizon=cfg.horizon,
@@ -684,6 +872,17 @@ def main() -> None:
                 n_episodes=cfg.n_eval_episodes,
                 seed=cfg.seed + env_steps + 13,
                 episode_len=cfg.episode_len,
+                action_limit=cfg.action_limit,
+                dynamics_model=cfg.dynamics_model,
+                double_integrator_dt=cfg.double_integrator_dt,
+                initial_velocity_std=cfg.initial_velocity_std,
+                double_integrator_velocity_damping=cfg.double_integrator_velocity_damping,
+                double_integrator_velocity_clip=cfg.double_integrator_velocity_clip,
+                state_limit=cfg.state_limit,
+                unbounded_state_space=cfg.unbounded_state_space,
+                state_sample_std=cfg.state_sample_std,
+                eval_min_start_goal_dist=cfg.eval_min_start_goal_dist,
+                eval_max_start_goal_dist=cfg.eval_max_start_goal_dist,
                 success_threshold=cfg.success_threshold,
                 eval_goal_mode=cfg.eval_goal_mode,
                 check_conditioning=cfg.check_conditioning,
@@ -707,8 +906,9 @@ def main() -> None:
         if np.isfinite(train_loss) and np.isfinite(val_loss):
             train_val_gap = float(val_loss - train_loss)
 
-        payload: Dict[str, float | int] = {
+        payload: Dict[str, float | int | str] = {
             "env_steps": env_steps,
+            "dynamics_model": cfg.dynamics_model,
             "train_loss": train_loss,
             "val_loss": val_loss,
             "train_val_gap": train_val_gap,
@@ -716,6 +916,8 @@ def main() -> None:
             "episode_min_dist": float(ep["min_dist"]),
             "episode_success": float(ep["success"]),
             "num_episodes_in_replay": len(replay),
+            "num_episodes_in_val_replay": (len(val_replay) if val_replay is not None else 0),
+            "val_source": cfg.val_source,
             "goal_probe_var_a0": goal_probe_var,
         }
         payload.update(eval_payload)
