@@ -3488,3 +3488,8 @@ Removed Agentic Autodecider scripts — superseded by relay auto-ML pipeline.
 
 ### Reason
 User requested removal: relay system now implements the auto-ML pipeline end-to-end. Autodecider scripts are no longer needed and add confusion. Git history preserves them if needed.
+
+### Commit
+`d58e8eb` — chore: remove Agentic Autodecider scripts (superseded by relay auto-ML pipeline)
+- Affected scope: scripts/ (6 files deleted), HANDOFF_LOG.md, docs/WORKING_MEMORY.md
+- Pushed to origin/analysis/results-2026-02-24

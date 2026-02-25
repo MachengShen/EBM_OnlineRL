@@ -1,9 +1,9 @@
 # EBM Online RL Working Memory (living snapshot)
 
-Last updated: 2026-02-24T16:10:00+08:00
+Last updated: 2026-02-25T00:00:00Z
 Repo: /root/ebm-online-rl-prototype
 Branch: analysis/results-2026-02-24
-Commit: 5ac5e48 (dirty: yes)
+Commit: d58e8eb (clean)
 GitHub: https://github.com/MachengShen/EBM_OnlineRL/tree/master
 
 ## Objective
@@ -969,3 +969,8 @@ cd /root/ebm-online-rl-prototype && bash runs/analysis/synth_maze2d_diffuser_pro
 - Added `--success_threshold` to `scripts/online_pointmass_goal_diffuser.py` and wired it to both train/eval env constructors.
 - Verified via smoke run (`1k` env steps, EqM `K=25`, `S=0.1`, threshold `0.2`): `eval_success_rate=0.6` (`n_eval_episodes=5`) at `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_rerun_20260225-1010/smoke_check/`.
 - Pending long sanity run: EqM `50k` env steps with the same settings (`K=25`, `S=0.1`, `success_threshold=0.2`).
+
+### Agentic Autodecider removed (2026-02-25, commit d58e8eb)
+- 6 scripts deleted: `agentic_maze2d_autodecider.py`, `agentic_role_orchestrator.py`, `launch_agentic_maze2d_autodecider_tmux.sh`, `launch_agentic_role_orchestrator_tmux.sh`, `overnight_maze2d_autodecider.py`, `launch_overnight_maze2d_autodecider_tmux.sh`.
+- Reason: relay auto-ML pipeline fully supersedes these. Git history preserves them.
+- HEAD now: `d58e8eb` (clean), pushed to `origin/analysis/results-2026-02-24`.
