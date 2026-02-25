@@ -964,3 +964,8 @@ cd /root/ebm-online-rl-prototype && bash runs/analysis/synth_maze2d_diffuser_pro
 
 ### Reporting guardrail (2026-02-25)
 - Always begin experiment results with an algorithm glossary block before metrics: define symbol semantics and units explicitly (`K := eqm_steps = number of EqM refinement iterations`, `S := eqm_step_size = per-step descent size`) and only then use compact run tags (`k25_s010`, etc.).
+
+### PointMass threshold knob + smoke (2026-02-25)
+- Added `--success_threshold` to `scripts/online_pointmass_goal_diffuser.py` and wired it to both train/eval env constructors.
+- Verified via smoke run (`1k` env steps, EqM `K=25`, `S=0.1`, threshold `0.2`): `eval_success_rate=0.6` (`n_eval_episodes=5`) at `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_rerun_20260225-1010/smoke_check/`.
+- Pending long sanity run: EqM `50k` env steps with the same settings (`K=25`, `S=0.1`, `success_threshold=0.2`).

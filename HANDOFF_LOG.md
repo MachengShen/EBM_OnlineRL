@@ -3430,3 +3430,61 @@ git add ebm_online_rl/online/eqm.py scripts/run_crl_maze2d_fair_budget.py [7 oth
 - Branch pushed: `analysis/results-2026-02-24` -> `origin/analysis/results-2026-02-24`
 - Files committed: `ebm_online_rl/online/eqm.py` (new), `scripts/run_crl_maze2d_fair_budget.py` (new), `ebm_online_rl/online/__init__.py`, `scripts/online_pointmass_goal_diffuser.py`, `scripts/synthetic_maze2d_diffuser_probe.py`, `scripts/synthetic_maze2d_gcbc_her_probe.py`, `scripts/synthetic_maze2d_sac_her_probe.py`, `HANDOFF_LOG.md`, `docs/WORKING_MEMORY.md`
 - Not committed (untracked bundles/logs): `gpt_pro_bundle_*.zip`, `gpt_pro_handoff_bundle_*.zip`, `memory/`, `MUJOCO_LOG.TXT`
+
+## 2026-02-25T10:16:27+08:00
+<!-- meta: {"type":"pointmass-success-threshold-knob-smoke","task_id":"manual-user-request","run_id":"pointmass_eqm_s020_smoke_20260225-1010","commit":"1129722","dirty":true} -->
+
+### Scope
+- Added configurable PointMass success threshold to support relaxed sanity-check evaluation and validated with a 1k-step EqM smoke run (`K=25`, `S=0.1`, threshold `0.2`).
+
+### Repo state
+- Path: /root/ebm-online-rl-prototype
+- Branch: analysis/results-2026-02-24
+- Commit: 1129722 (dirty: yes)
+
+### Exact command(s) run
+```bash
+.venv/bin/python -m py_compile scripts/online_pointmass_goal_diffuser.py
+online_pointmass_goal_diffuser.py --help | rg "success_threshold|eqm_steps|eqm_step_size"
+online_pointmass_goal_diffuser.py --algo eqm --total_env_steps 1000 --eqm_steps 25 --eqm_step_size 0.1 --success_threshold 0.2 -> runs/.../eqm_best_k25_s010_long50k_s020_rerun_20260225-1010/smoke_check/
+```
+
+### Output artifacts
+- `scripts/online_pointmass_goal_diffuser.py`
+- `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_rerun_20260225-1010/smoke_check/config.json`
+- `runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_rerun_20260225-1010/smoke_check/metrics.jsonl`
+
+### Results (observed)
+- New CLI knob available: `--success_threshold`.
+- Smoke (`env_steps=1000`, `n_eval_episodes=5`, `success_threshold=0.2`):
+  - `eval_success_rate=0.6`
+  - `eval_final_dist_mean=1.2860`
+  - `eval_min_dist_mean=0.2304`
+
+### Interpretation
+- Relaxed threshold wiring works in both train/eval code paths and produces nontrivial early success in short EqM sanity runs.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype && .venv/bin/python scripts/online_pointmass_goal_diffuser.py --algo eqm --device cuda:0 --total_env_steps 50000 --warmup_steps 500 --train_every 500 --gradient_steps 20 --batch_size 32 --horizon 32 --eqm_steps 25 --eqm_step_size 0.1 --eqm_c_scale 1.0 --model_base_dim 16 --model_dim_mults 1,2 --eval_every 5000 --n_eval_episodes 50 --success_threshold 0.2 --check_conditioning --logdir runs/analysis/pointmass_eqm_minchange_20260225-1002/eqm_best_k25_s010_long50k_s020_run_20260225-1015
+```
+
+## 2026-02-25T00:00:00Z
+<!-- meta: {"type":"chore","scope":"scripts","commit":"pending"} -->
+
+### Scope
+Removed Agentic Autodecider scripts — superseded by relay auto-ML pipeline.
+
+### Exact commands run
+`git rm scripts/agentic_maze2d_autodecider.py scripts/agentic_role_orchestrator.py ...`
+
+### Files removed
+- `scripts/agentic_maze2d_autodecider.py`
+- `scripts/agentic_role_orchestrator.py`
+- `scripts/launch_agentic_maze2d_autodecider_tmux.sh`
+- `scripts/launch_agentic_role_orchestrator_tmux.sh`
+- `scripts/overnight_maze2d_autodecider.py`
+- `scripts/launch_overnight_maze2d_autodecider_tmux.sh`
+
+### Reason
+User requested removal: relay system now implements the auto-ML pipeline end-to-end. Autodecider scripts are no longer needed and add confusion. Git history preserves them if needed.
