@@ -4007,3 +4007,37 @@ online_pointmass_goal_diffuser.py --algo eqm ... --horizon 96 --episode_len 192 
 ```bash
 cd /root/ebm-online-rl-prototype && .venv/bin/python scripts/online_pointmass_goal_diffuser.py --algo eqm --device cuda:0 --seed 0 --total_env_steps 6000 --warmup_steps 500 --train_every 500 --gradient_steps 20 --batch_size 32 --horizon 96 --eqm_steps 25 --eqm_step_size 0.1 --eqm_c_scale 1.0 --model_base_dim 16 --model_dim_mults 1,2 --val_source replay --val_every 500 --val_batches 8 --val_batch_size 64 --eval_every 3000 --n_eval_episodes 12 --episode_len 192 --state_limit 1.0 --eval_goal_mode random --eval_min_start_goal_dist 0.5 --eval_max_start_goal_dist 1.5 --success_threshold 0.2 --dynamics_model double_integrator --double_integrator_dt 0.1 --initial_velocity_std 0.0 --double_integrator_velocity_damping 1.5 --double_integrator_velocity_clip 2.0 --planner_control_mode action --replay_goal_position_only --action_limit 1.0 --logdir runs/analysis/pointmass_di_ranked_ablation_20260225-150732/r6_di_longh96_ep192_action1p0_damp1p5_vclip2p0
 ```
+## 2026-02-25T16:28:58+08:00
+<!-- meta: {"type":"pointmass-gptpro-bundle-and-push","task_id":"manual-user-request","commit":"3d3388c","dirty":true} -->
+
+### Scope
+- Built a focused PointMass debug handoff bundle for GPT-PRO (scripts + relevant DI ablation artifacts only).
+- Committed and pushed current implementation/docs on `analysis/results-2026-02-24`.
+
+### Repo state
+- Path: `/root/ebm-online-rl-prototype`
+- Branch: `analysis/results-2026-02-24`
+- Commit: `3d3388c` (dirty: yes)
+
+### Exact command(s) run
+```bash
+create GPT_PRO_POINTMASS_DEBUG_HANDOFF_20260225.md + bundle dir (pointmass scripts + selected metrics/config JSONL/JSON)
+python zipfile build -> /root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_debug_bundle_20260225.zip
+git add HANDOFF_LOG.md docs/WORKING_MEMORY.md ebm_online_rl/envs/pointmass2d.py ebm_online_rl/online/planner.py scripts/online_pointmass_goal_diffuser.py GPT_PRO_POINTMASS_DEBUG_HANDOFF_20260225.md
+git commit -m "pointmass: package DI ablation findings and handoff bundle prep"
+git push origin analysis/results-2026-02-24
+```
+
+### Output artifacts
+- Handoff report: `GPT_PRO_POINTMASS_DEBUG_HANDOFF_20260225.md`
+- Zip bundle: `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_debug_bundle_20260225.zip`
+- Commit pushed: `3d3388c` on `origin/analysis/results-2026-02-24`
+
+### Results (observed)
+- Bundle size: `43K` (intentionally minimal; excludes checkpoints).
+- Includes PointMass DI ablation runs `r1..r5` configs/metrics/summaries, core PointMass scripts, and only the two Maze2D reference files used for contrast.
+
+### Next step (runnable)
+```bash
+cd /root/ebm-online-rl-prototype && unzip -l /root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_debug_bundle_20260225.zip
+```

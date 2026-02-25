@@ -1303,3 +1303,15 @@ cd /root/ebm-online-rl-prototype && bash runs/analysis/synth_maze2d_diffuser_pro
 ### Next discriminating run
 - Run long-horizon **with** stabilized high-authority control (combine successful pieces rather than single-factor):
   - `horizon=96`, `episode_len=192`, `action_limit=1.0`, `double_integrator_velocity_damping=1.5`, `double_integrator_velocity_clip=2.0`, `planner_control_mode=action`, `replay_goal_position_only`.
+
+## 2026-02-25T16:28:58+08:00
+### PointMass GPT-PRO handoff bundle + commit push
+- Added focused handoff report: `GPT_PRO_POINTMASS_DEBUG_HANDOFF_20260225.md`.
+- Built upload-ready bundle (PointMass-only relevant artifacts):
+  - `/root/.codex-discord-relay/uploads/discord_1472061022239195304_thread_1473203408256368795/pointmass_debug_bundle_20260225.zip` (`43K`).
+- Pushed implementation/docs commit:
+  - `3d3388c` on `origin/analysis/results-2026-02-24`.
+
+### Bundle scope
+- Included: `scripts/online_pointmass_goal_diffuser.py`, `ebm_online_rl/envs/pointmass2d.py`, `ebm_online_rl/online/planner.py`, PointMass DI ablation `r1..r5` configs/metrics/summaries, and minimal Maze2D reference files used in causal comparison.
+- Excluded: model checkpoints (`.pt`) and unrelated large artifacts.
