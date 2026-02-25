@@ -113,8 +113,18 @@ def parse_args() -> Config:
     p.add_argument("--val_every", type=int, default=Config.val_every)
     p.add_argument("--val_batches", type=int, default=Config.val_batches)
     p.add_argument("--gcbc_hidden_dims", type=str, default=Config.gcbc_hidden_dims)
-    p.add_argument("--gcbc_her_k_per_transition", type=int, default=Config.gcbc_her_k_per_transition)
-    p.add_argument("--gcbc_future_sample_attempts", type=int, default=Config.gcbc_future_sample_attempts)
+    p.add_argument(
+        "--gcbc_her_k_per_transition",
+        type=int,
+        default=Config.gcbc_her_k_per_transition,
+        help="HER relabel count per transition; set to 0 for no-HER baseline.",
+    )
+    p.add_argument(
+        "--gcbc_future_sample_attempts",
+        type=int,
+        default=Config.gcbc_future_sample_attempts,
+        help="Future-goal sampling attempts per HER label (ignored when --gcbc_her_k_per_transition=0).",
+    )
     p.add_argument("--action_scale", type=float, default=Config.action_scale)
     p.add_argument(
         "--corridor_aware_data",
@@ -273,10 +283,11 @@ def build_gcbc_her_samples(
         raise ValueError("Cannot build HER samples from empty observations")
     if len(obs) != len(act) or len(obs) != len(t):
         raise ValueError("observations/actions/timeouts length mismatch")
-    if her_k_per_transition <= 0:
-        raise ValueError("her_k_per_transition must be > 0")
-    if future_sample_attempts <= 0:
-        raise ValueError("future_sample_attempts must be > 0")
+    if her_k_per_transition < 0:
+        raise ValueError("her_k_per_transition must be >= 0")
+    no_her = int(her_k_per_transition) == 0
+    if (not no_her) and future_sample_attempts <= 0:
+        raise ValueError("future_sample_attempts must be > 0 when HER is enabled")
 
     rng = np.random.default_rng(seed)
     spans = dprobe.episode_spans_from_timeouts(t)
@@ -294,6 +305,21 @@ def build_gcbc_her_samples(
     for s0, s1 in spans:
         for i in range(s0, s1):
             transitions_total += 1
+            if no_her:
+                g_idx = s1 - 1
+                if g_idx <= i and (i + 1) < s1:
+                    g_idx = i + 1
+                goal_xy = obs[g_idx, :2].astype(np.float32)
+                dist = float(np.linalg.norm(goal_xy - obs[i, :2]))
+                if dist < float(min_distance) and (i + 1) < s1:
+                    goal_xy = obs[i + 1, :2].astype(np.float32)
+                xs_obs.append(obs[i].copy())
+                xs_goal.append(goal_xy.copy())
+                ys_act.append(act[i].copy())
+                relabels_accepted += 1
+                transitions_with_any_her += 1
+                continue
+
             max_local_k = min(int(max_k), int(s1 - 1 - i))
             if max_local_k < 1:
                 short_span_skips += 1
@@ -973,10 +999,10 @@ def main() -> None:
         raise ValueError("--online_early_terminate_threshold must be > 0")
     if cfg.online_min_accepted_episode_len < 0:
         raise ValueError("--online_min_accepted_episode_len must be >= 0")
-    if cfg.gcbc_her_k_per_transition <= 0:
-        raise ValueError("--gcbc_her_k_per_transition must be > 0")
-    if cfg.gcbc_future_sample_attempts <= 0:
-        raise ValueError("--gcbc_future_sample_attempts must be > 0")
+    if cfg.gcbc_her_k_per_transition < 0:
+        raise ValueError("--gcbc_her_k_per_transition must be >= 0")
+    if cfg.gcbc_her_k_per_transition > 0 and cfg.gcbc_future_sample_attempts <= 0:
+        raise ValueError("--gcbc_future_sample_attempts must be > 0 when HER is enabled")
     if not (0.0 <= cfg.online_planning_success_rel_reduction <= 1.0):
         raise ValueError("--online_planning_success_rel_reduction must be in [0, 1]")
     if cfg.eval_rollout_mode not in ("open_loop", "receding_horizon"):

@@ -22,9 +22,104 @@ import torch
 import d4rl  # noqa: F401
 from diffuser.datasets.sequence import GoalDataset
 from diffuser.models.diffusion import GaussianDiffusion
+from diffuser.models.helpers import Losses, apply_conditioning
 from diffuser.models.temporal import TemporalUnet
 from diffuser.utils.arrays import batch_to_device
 from diffuser.utils.training import EMA
+
+
+class EquilibriumMatchingDiffusion(torch.nn.Module):
+    """EqM-style drop-in with GaussianDiffusion-compatible loss/sample API."""
+
+    def __init__(
+        self,
+        *,
+        model: torch.nn.Module,
+        horizon: int,
+        observation_dim: int,
+        action_dim: int,
+        n_eqm_steps: int,
+        step_size: float,
+        c_scale: float,
+        clip_denoised: bool,
+        action_weight: float = 1.0,
+        loss_discount: float = 1.0,
+        obs_loss_weight: float = 1.0,
+        loss_type: str = "l2",
+    ) -> None:
+        super().__init__()
+        self.model = model
+        self.horizon = int(horizon)
+        self.observation_dim = int(observation_dim)
+        self.action_dim = int(action_dim)
+        self.transition_dim = self.observation_dim + self.action_dim
+        self.n_eqm_steps = int(n_eqm_steps)
+        self.step_size = float(step_size)
+        self.c_scale = float(c_scale)
+        self.clip_denoised = bool(clip_denoised)
+
+        self.loss_weights = self._build_loss_weights(
+            action_weight=float(action_weight),
+            discount=float(loss_discount),
+            obs_loss_weight=float(obs_loss_weight),
+        )
+        self.register_buffer("_loss_weights_buf", self.loss_weights)
+        self.loss_fn = Losses[loss_type](self._loss_weights_buf, self.action_dim)
+
+    def _build_loss_weights(self, action_weight: float, discount: float, obs_loss_weight: float) -> torch.Tensor:
+        dim_weights = torch.ones(self.transition_dim, dtype=torch.float32)
+        dim_weights[self.action_dim :] *= float(obs_loss_weight)
+        discounts = discount ** torch.arange(self.horizon, dtype=torch.float32)
+        discounts = discounts / discounts.mean()
+        loss_weights = torch.einsum("h,t->ht", discounts, dim_weights)
+        loss_weights[0, : self.action_dim] = float(action_weight)
+        return loss_weights
+
+    def _sample_gamma(self, batch_size: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        return torch.rand((batch_size, 1, 1), device=device, dtype=dtype)
+
+    def loss(self, x_start: torch.Tensor, cond: Dict[int, torch.Tensor]):
+        bsz = int(x_start.shape[0])
+        eps = torch.randn_like(x_start)
+        gamma = self._sample_gamma(batch_size=bsz, device=x_start.device, dtype=x_start.dtype)
+        c_gamma = float(self.c_scale) * (1.0 - gamma)
+
+        x_gamma = gamma * x_start + (1.0 - gamma) * eps
+        x_gamma = apply_conditioning(x_gamma, cond, self.action_dim)
+        target = (eps - x_start) * c_gamma
+
+        t0 = torch.zeros((bsz,), device=x_start.device, dtype=torch.long)
+        pred = self.model(x_gamma, cond, t0)
+        pred = apply_conditioning(pred, cond, self.action_dim)
+        target = apply_conditioning(target, cond, self.action_dim)
+        return self.loss_fn(pred, target)
+
+    @torch.no_grad()
+    def conditional_sample(self, cond, *args, horizon=None, verbose=True, return_diffusion=False, **kwargs):
+        del args, kwargs, verbose
+        batch_size = len(cond[0])
+        horizon = int(horizon or self.horizon)
+        device = next(self.parameters()).device
+
+        x = torch.randn((batch_size, horizon, self.transition_dim), device=device)
+        x = apply_conditioning(x, cond, self.action_dim)
+        diffusion = [x] if return_diffusion else None
+        t0 = torch.zeros((batch_size,), device=device, dtype=torch.long)
+        for _ in range(max(1, self.n_eqm_steps)):
+            grad = self.model(x, cond, t0)
+            x = x - float(self.step_size) * grad
+            if self.clip_denoised:
+                x = torch.clamp(x, -1.0, 1.0)
+            x = apply_conditioning(x, cond, self.action_dim)
+            if diffusion is not None:
+                diffusion.append(x)
+
+        if diffusion is not None:
+            return x, torch.stack(diffusion, dim=1)
+        return x
+
+    def forward(self, cond, *args, **kwargs):
+        return self.conditional_sample(cond=cond, *args, **kwargs)
 
 
 def safe_reset(env: gym.Env, seed: int | None = None) -> np.ndarray:
@@ -186,10 +281,16 @@ class Config:
     seed: int = 0
     device: str = "cuda:0"
     logdir: str = ""
+    algo: str = "diffusion"  # {"diffusion","eqm"}
     n_episodes: int = 400
     episode_len: int = 192
     horizon: int = 64
     n_diffusion_steps: int = 64
+    eqm_steps: int = 25
+    eqm_step_size: float = 0.05
+    eqm_c_scale: float = 1.0
+    eqm_clip_sample: bool = True
+    eqm_loss_obs_weight: float = 1.0
     model_dim: int = 64
     model_dim_mults: str = "1,2,4"
     learning_rate: float = 2e-4
@@ -322,7 +423,7 @@ class SyntheticDatasetEnv:
 def parse_args() -> Config:
     parser = argparse.ArgumentParser(
         description=(
-            "Synthetic Maze2D experiment with original Diffuser implementation: "
+            "Synthetic Maze2D experiment with trajectory EBMs (Diffuser or EqM): "
             "random-policy data collection, training, and start-goal trajectory probing."
         )
     )
@@ -330,10 +431,39 @@ def parse_args() -> Config:
     parser.add_argument("--seed", type=int, default=Config.seed)
     parser.add_argument("--device", type=str, default=Config.device)
     parser.add_argument("--logdir", type=str, default=Config.logdir)
+    parser.add_argument(
+        "--algo",
+        type=str,
+        default=Config.algo,
+        choices=["diffusion", "eqm"],
+        help="Trajectory learner backend. diffusion=DDPM, eqm=equilibrium matching descent sampler.",
+    )
     parser.add_argument("--n_episodes", type=int, default=Config.n_episodes)
     parser.add_argument("--episode_len", type=int, default=Config.episode_len)
     parser.add_argument("--horizon", type=int, default=Config.horizon)
     parser.add_argument("--n_diffusion_steps", type=int, default=Config.n_diffusion_steps)
+    parser.add_argument("--eqm_steps", type=int, default=Config.eqm_steps)
+    parser.add_argument("--eqm_step_size", type=float, default=Config.eqm_step_size)
+    parser.add_argument("--eqm_c_scale", type=float, default=Config.eqm_c_scale)
+    parser.add_argument(
+        "--eqm_loss_obs_weight",
+        type=float,
+        default=Config.eqm_loss_obs_weight,
+        help="Observation-dimension weighting in EqM loss (action dimensions remain weight=1).",
+    )
+    parser.add_argument(
+        "--eqm_clip_sample",
+        dest="eqm_clip_sample",
+        action="store_true",
+        help="Clamp EqM trajectories to [-1, 1] after each refinement step.",
+    )
+    parser.add_argument(
+        "--no_eqm_clip_sample",
+        dest="eqm_clip_sample",
+        action="store_false",
+        help="Disable EqM trajectory clipping during refinement.",
+    )
+    parser.set_defaults(eqm_clip_sample=Config.eqm_clip_sample)
     parser.add_argument("--model_dim", type=int, default=Config.model_dim)
     parser.add_argument("--model_dim_mults", type=str, default=Config.model_dim_mults)
     parser.add_argument("--learning_rate", type=float, default=Config.learning_rate)
@@ -2390,6 +2520,14 @@ def main() -> None:
         raise ValueError("--online_replan_every_n_steps must be > 0")
     if cfg.eval_rollout_replan_every_n_steps <= 0:
         raise ValueError("--eval_rollout_replan_every_n_steps must be > 0")
+    if cfg.algo not in {"diffusion", "eqm"}:
+        raise ValueError("--algo must be one of: diffusion, eqm")
+    if cfg.eqm_steps <= 0:
+        raise ValueError("--eqm_steps must be > 0")
+    if cfg.eqm_step_size <= 0.0:
+        raise ValueError("--eqm_step_size must be > 0")
+    if cfg.eqm_loss_obs_weight <= 0.0:
+        raise ValueError("--eqm_loss_obs_weight must be > 0")
     if cfg.online_goal_geom_min_k <= 0:
         raise ValueError("--online_goal_geom_min_k must be > 0")
     if cfg.online_goal_geom_max_k < cfg.online_goal_geom_min_k:
@@ -2461,6 +2599,16 @@ def main() -> None:
     print(f"[setup] env={cfg.env} seed={cfg.seed}")
     print(f"[setup] device={device}")
     print(f"[setup] logdir={logdir}")
+    print(
+        "[setup] "
+        f"algo={cfg.algo} "
+        f"n_diffusion_steps={cfg.n_diffusion_steps} "
+        f"eqm_steps={cfg.eqm_steps} "
+        f"eqm_step_size={cfg.eqm_step_size:.4f} "
+        f"eqm_c_scale={cfg.eqm_c_scale:.3f} "
+        f"eqm_clip_sample={int(bool(cfg.eqm_clip_sample))} "
+        f"eqm_loss_obs_weight={cfg.eqm_loss_obs_weight:.3f}"
+    )
     print(
         "[setup] "
         f"collector_weights={cfg.collector_weights} "
@@ -2557,24 +2705,42 @@ def main() -> None:
         dim_mults=dim_mults,
     ).to(device)
 
-    diffusion = GaussianDiffusion(
-        model=model,
-        horizon=cfg.horizon,
-        observation_dim=dataset.observation_dim,
-        action_dim=dataset.action_dim,
-        n_timesteps=cfg.n_diffusion_steps,
-        clip_denoised=cfg.clip_denoised,
-        predict_epsilon=cfg.predict_epsilon,
-        action_weight=1.0,
-        loss_discount=1.0,
-        loss_weights=None,
-    ).to(device)
+    if cfg.algo == "diffusion":
+        diffusion = GaussianDiffusion(
+            model=model,
+            horizon=cfg.horizon,
+            observation_dim=dataset.observation_dim,
+            action_dim=dataset.action_dim,
+            n_timesteps=cfg.n_diffusion_steps,
+            clip_denoised=cfg.clip_denoised,
+            predict_epsilon=cfg.predict_epsilon,
+            action_weight=1.0,
+            loss_discount=1.0,
+            loss_weights=None,
+        ).to(device)
+    elif cfg.algo == "eqm":
+        diffusion = EquilibriumMatchingDiffusion(
+            model=model,
+            horizon=cfg.horizon,
+            observation_dim=dataset.observation_dim,
+            action_dim=dataset.action_dim,
+            n_eqm_steps=cfg.eqm_steps,
+            step_size=cfg.eqm_step_size,
+            c_scale=cfg.eqm_c_scale,
+            clip_denoised=cfg.eqm_clip_sample,
+            action_weight=1.0,
+            loss_discount=1.0,
+            obs_loss_weight=cfg.eqm_loss_obs_weight,
+            loss_type="l2",
+        ).to(device)
+    else:
+        raise ValueError(f"Unknown --algo={cfg.algo}")
 
     ema_helper = EMA(cfg.ema_decay)
     ema_model = copy.deepcopy(diffusion).to(device)
     optimizer = torch.optim.Adam(diffusion.parameters(), lr=cfg.learning_rate)
 
-    collector_ckpt_model: GaussianDiffusion | None = None
+    collector_ckpt_model: torch.nn.Module | None = None
     if cfg.collector_ckpt_path:
         ckpt = torch.load(cfg.collector_ckpt_path, map_location=device)
         ckpt_key = "ema" if cfg.collector_ckpt_weights == "ema" else "model"
@@ -2595,10 +2761,10 @@ def main() -> None:
             f"(ckpt_key={ckpt_key})"
         )
 
-    def model_for_eval() -> GaussianDiffusion:
+    def model_for_eval() -> torch.nn.Module:
         return ema_model if cfg.eval_weights == "ema" else diffusion
 
-    def model_for_collection() -> GaussianDiffusion:
+    def model_for_collection() -> torch.nn.Module:
         if collector_ckpt_model is not None:
             return collector_ckpt_model
         return ema_model if cfg.collector_weights == "ema" else diffusion
@@ -2607,7 +2773,7 @@ def main() -> None:
         meta: Dict[str, Any] = {
             "env_id": str(cfg.env),
             "seed": int(cfg.seed),
-            "collector_method": "diffuser",
+            "collector_method": str(cfg.algo),
             "collector_weights": str(cfg.collector_weights),
             "collection_budget": {
                 "offline_n_episodes": int(cfg.n_episodes),

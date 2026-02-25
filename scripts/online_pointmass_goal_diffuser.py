@@ -9,7 +9,7 @@ import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Protocol
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -20,7 +20,25 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from ebm_online_rl.envs import PointMass2D
-from ebm_online_rl.online import EpisodeReplayBuffer, GaussianDiffusion1D, TemporalUNet1D, plan_action
+from ebm_online_rl.online import (
+    EpisodeReplayBuffer,
+    EquilibriumMatching1D,
+    GaussianDiffusion1D,
+    TemporalUNet1D,
+    plan_action,
+)
+
+
+class TrajectoryModel(Protocol):
+    def loss(self, x_start: torch.Tensor) -> torch.Tensor: ...
+    def sample(
+        self,
+        batch_size: int,
+        obs0: torch.Tensor,
+        goal: torch.Tensor,
+        obs_dim: int,
+        act_dim: int,
+    ) -> torch.Tensor: ...
 
 
 @dataclass
@@ -34,6 +52,11 @@ class TrainConfig:
     batch_size: int = 64
     horizon: int = 32
     n_diffusion_steps: int = 16
+    algo: str = "diffusion"
+    eqm_steps: int = 50
+    eqm_step_size: float = 0.05
+    eqm_c_scale: float = 1.0
+    eqm_clip_sample: bool = True
     predict_epsilon: bool = True
     clip_denoised: bool = False
     loss_action_weight: float = 10.0
@@ -49,6 +72,7 @@ class TrainConfig:
     goal_sampling_p_replay: float = 0.5
     check_conditioning: bool = False
     episode_len: int = 50
+    success_threshold: float = 0.05
     learning_rate: float = 3e-4
     max_episodes_in_replay: int = 10000
     model_base_dim: int = 32
@@ -72,6 +96,23 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--batch_size", type=int, default=TrainConfig.batch_size)
     parser.add_argument("--horizon", type=int, default=TrainConfig.horizon)
     parser.add_argument("--n_diffusion_steps", type=int, default=TrainConfig.n_diffusion_steps)
+    parser.add_argument("--algo", type=str, default=TrainConfig.algo, choices=("diffusion", "eqm"))
+    parser.add_argument("--eqm_steps", type=int, default=TrainConfig.eqm_steps)
+    parser.add_argument("--eqm_step_size", type=float, default=TrainConfig.eqm_step_size)
+    parser.add_argument("--eqm_c_scale", type=float, default=TrainConfig.eqm_c_scale)
+    parser.add_argument(
+        "--eqm_clip_sample",
+        dest="eqm_clip_sample",
+        action="store_true",
+        help="Clamp EqM iterative samples to [-1,1] each refinement step (default).",
+    )
+    parser.add_argument(
+        "--no_eqm_clip_sample",
+        dest="eqm_clip_sample",
+        action="store_false",
+        help="Disable EqM sample clipping.",
+    )
+    parser.set_defaults(eqm_clip_sample=TrainConfig.eqm_clip_sample)
     parser.add_argument(
         "--predict_epsilon",
         dest="predict_epsilon",
@@ -121,6 +162,12 @@ def parse_args() -> TrainConfig:
     parser.add_argument("--goal_sampling_p_replay", type=float, default=TrainConfig.goal_sampling_p_replay)
     parser.add_argument("--check_conditioning", action="store_true", default=TrainConfig.check_conditioning)
     parser.add_argument("--episode_len", type=int, default=TrainConfig.episode_len)
+    parser.add_argument(
+        "--success_threshold",
+        type=float,
+        default=TrainConfig.success_threshold,
+        help="Goal success radius in Euclidean distance (used for train/eval success stats).",
+    )
     parser.add_argument("--learning_rate", type=float, default=TrainConfig.learning_rate)
     parser.add_argument("--max_episodes_in_replay", type=int, default=TrainConfig.max_episodes_in_replay)
     parser.add_argument("--model_base_dim", type=int, default=TrainConfig.model_base_dim)
@@ -197,12 +244,34 @@ def choose_goal(
     return env.sample_goal(rng)
 
 
+@torch.no_grad()
+def goal_influence_probe(
+    model: TrajectoryModel,
+    obs0: np.ndarray,
+    goals: np.ndarray,
+    obs_dim: int,
+    act_dim: int,
+    action_scale: float,
+    device: torch.device,
+) -> float:
+    obs0_t = torch.as_tensor(obs0, device=device, dtype=torch.float32)
+    a0s: List[torch.Tensor] = []
+    for g in goals:
+        g_t = torch.as_tensor(g, device=device, dtype=torch.float32)
+        traj = model.sample(batch_size=1, obs0=obs0_t, goal=g_t, obs_dim=obs_dim, act_dim=act_dim)
+        a0 = traj[0, 0, obs_dim : obs_dim + act_dim] * action_scale
+        a0s.append(a0.detach().cpu())
+    if not a0s:
+        return float("nan")
+    return float(torch.stack(a0s, dim=0).var(dim=0).mean().item())
+
+
 def rollout_episode(
     env: PointMass2D,
     goal: np.ndarray,
     policy_mode: str,
     rng: np.random.Generator,
-    model: GaussianDiffusion1D | None,
+    model: TrajectoryModel | None,
     device: torch.device,
     check_conditioning: bool,
     planner_control_mode: str,
@@ -280,7 +349,7 @@ def sample_reachable_start_goal_from_random_trajectory(
 
 
 def train_burst(
-    model: GaussianDiffusion1D,
+    model: TrajectoryModel,
     optimizer: torch.optim.Optimizer,
     replay: EpisodeReplayBuffer,
     rng: np.random.Generator,
@@ -289,7 +358,7 @@ def train_burst(
     gradient_steps: int,
     action_scale: float,
     device: torch.device,
-    ema_model: GaussianDiffusion1D | None = None,
+    ema_model: TrajectoryModel | None = None,
     ema_decay: float = 0.995,
     ema_start_step: int = 0,
     ema_update_every: int = 1,
@@ -324,16 +393,17 @@ def train_burst(
 
 @torch.no_grad()
 def evaluate(
-    model: GaussianDiffusion1D,
+    model: TrajectoryModel,
     n_episodes: int,
     seed: int,
     episode_len: int,
+    success_threshold: float,
     eval_goal_mode: str,
     check_conditioning: bool,
     planner_control_mode: str,
     device: torch.device,
 ) -> Dict[str, float]:
-    eval_env = PointMass2D(episode_length=episode_len)
+    eval_env = PointMass2D(episode_length=episode_len, success_threshold=success_threshold)
     rng = np.random.default_rng(seed)
     model.eval()
 
@@ -372,7 +442,7 @@ def evaluate(
 
 @torch.no_grad()
 def compute_validation_loss(
-    model: GaussianDiffusion1D,
+    model: TrajectoryModel,
     replay: EpisodeReplayBuffer,
     rng: np.random.Generator,
     batch_size: int,
@@ -421,7 +491,7 @@ def main() -> None:
         torch.backends.cudnn.benchmark = True
     else:
         print(
-            "Warning: running on CPU. This will be slow due to diffusion MPC planning.",
+            "Warning: running on CPU. This may be slow for trajectory-planning rollouts.",
             flush=True,
         )
 
@@ -429,7 +499,7 @@ def main() -> None:
     with (logdir / "config.json").open("w", encoding="utf-8") as f:
         json.dump(asdict(cfg), f, indent=2)
 
-    env = PointMass2D(episode_length=cfg.episode_len)
+    env = PointMass2D(episode_length=cfg.episode_len, success_threshold=cfg.success_threshold)
     replay = EpisodeReplayBuffer(obs_dim=env.obs_dim, act_dim=env.act_dim, max_episodes=cfg.max_episodes_in_replay)
     val_replay = EpisodeReplayBuffer(obs_dim=env.obs_dim, act_dim=env.act_dim, max_episodes=max(cfg.holdout_episodes, 1))
 
@@ -442,22 +512,58 @@ def main() -> None:
         base_dim=cfg.model_base_dim,
         dim_mults=dim_mults,
     )
-    diffusion = GaussianDiffusion1D(
-        model=denoiser,
-        horizon=cfg.horizon,
-        transition_dim=transition_dim,
-        action_dim=env.act_dim,
-        n_diffusion_steps=cfg.n_diffusion_steps,
-        predict_epsilon=cfg.predict_epsilon,
-        clip_denoised=cfg.clip_denoised,
-        action_weight=cfg.loss_action_weight,
-        loss_discount=cfg.loss_discount,
-        obs_loss_weight=cfg.loss_obs_weight,
-    ).to(device)
-    ema_diffusion = copy.deepcopy(diffusion).to(device)
-    hard_update_model(ema_diffusion, diffusion)
+    if cfg.algo == "diffusion":
+        model: TrajectoryModel = GaussianDiffusion1D(
+            model=denoiser,
+            horizon=cfg.horizon,
+            transition_dim=transition_dim,
+            action_dim=env.act_dim,
+            n_diffusion_steps=cfg.n_diffusion_steps,
+            predict_epsilon=cfg.predict_epsilon,
+            clip_denoised=cfg.clip_denoised,
+            action_weight=cfg.loss_action_weight,
+            loss_discount=cfg.loss_discount,
+            obs_loss_weight=cfg.loss_obs_weight,
+        )
+    elif cfg.algo == "eqm":
+        model = EquilibriumMatching1D(
+            model=denoiser,
+            horizon=cfg.horizon,
+            transition_dim=transition_dim,
+            action_dim=env.act_dim,
+            n_eqm_steps=cfg.eqm_steps,
+            step_size=cfg.eqm_step_size,
+            c_scale=cfg.eqm_c_scale,
+            clip_sample=cfg.eqm_clip_sample,
+            action_weight=cfg.loss_action_weight,
+            loss_discount=cfg.loss_discount,
+            obs_loss_weight=cfg.loss_obs_weight,
+        )
+    else:
+        raise ValueError(f"Unknown algo={cfg.algo}")
 
-    optimizer = torch.optim.Adam(diffusion.parameters(), lr=cfg.learning_rate)
+    model = model.to(device)
+    ema_model: TrajectoryModel = copy.deepcopy(model).to(device)
+    hard_update_model(ema_model, model)
+
+    probe_obs0 = env.sample_goal(rng)
+    probe_goals = np.stack([env.sample_goal(rng) for _ in range(6)], axis=0)
+    goal_probe_var = goal_influence_probe(
+        model=ema_model if cfg.use_ema_for_planning else model,
+        obs0=probe_obs0,
+        goals=probe_goals,
+        obs_dim=env.obs_dim,
+        act_dim=env.act_dim,
+        action_scale=env.action_limit,
+        device=device,
+    )
+    print(
+        f"Goal influence probe (a0 variance across goals): {goal_probe_var:.6f} "
+        f"(algo={cfg.algo}, steps={cfg.eqm_steps if cfg.algo == 'eqm' else cfg.n_diffusion_steps})",
+        flush=True,
+    )
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=cfg.learning_rate)
     metrics_path = logdir / "metrics.jsonl"
 
     env_steps = 0
@@ -497,7 +603,7 @@ def main() -> None:
     burnin_loss = float("nan")
     if replay.can_sample(cfg.horizon):
         burnin_loss, burnin_updates = train_burst(
-            model=diffusion,
+            model=model,
             optimizer=optimizer,
             replay=replay,
             rng=rng,
@@ -506,7 +612,7 @@ def main() -> None:
             gradient_steps=cfg.gradient_steps,
             action_scale=env.action_limit,
             device=device,
-            ema_model=ema_diffusion if cfg.use_ema_for_planning else None,
+            ema_model=ema_model if cfg.use_ema_for_planning else None,
             ema_decay=cfg.ema_decay,
             ema_start_step=cfg.ema_start_step,
             ema_update_every=cfg.ema_update_every,
@@ -528,7 +634,7 @@ def main() -> None:
             goal=goal,
             policy_mode="planner",
             rng=rng,
-            model=ema_diffusion if cfg.use_ema_for_planning else diffusion,
+            model=ema_model if cfg.use_ema_for_planning else model,
             device=device,
             check_conditioning=cfg.check_conditioning,
             planner_control_mode=cfg.planner_control_mode,
@@ -539,7 +645,7 @@ def main() -> None:
         train_loss = float("nan")
         if env_steps >= next_train and replay.can_sample(cfg.horizon):
             train_loss, n_updates = train_burst(
-                model=diffusion,
+                model=model,
                 optimizer=optimizer,
                 replay=replay,
                 rng=rng,
@@ -548,7 +654,7 @@ def main() -> None:
                 gradient_steps=cfg.gradient_steps,
                 action_scale=env.action_limit,
                 device=device,
-                ema_model=ema_diffusion if cfg.use_ema_for_planning else None,
+                ema_model=ema_model if cfg.use_ema_for_planning else None,
                 ema_decay=cfg.ema_decay,
                 ema_start_step=cfg.ema_start_step,
                 ema_update_every=cfg.ema_update_every,
@@ -560,7 +666,7 @@ def main() -> None:
         val_loss = float("nan")
         if cfg.val_every > 0 and env_steps >= next_val and val_replay.can_sample(cfg.horizon):
             val_loss = compute_validation_loss(
-                model=diffusion,
+                model=model,
                 replay=val_replay,
                 rng=rng,
                 batch_size=cfg.val_batch_size,
@@ -574,10 +680,11 @@ def main() -> None:
         eval_payload: Dict[str, float] = {}
         if env_steps >= next_eval:
             eval_payload = evaluate(
-                model=ema_diffusion if cfg.use_ema_for_planning else diffusion,
+                model=ema_model if cfg.use_ema_for_planning else model,
                 n_episodes=cfg.n_eval_episodes,
                 seed=cfg.seed + env_steps + 13,
                 episode_len=cfg.episode_len,
+                success_threshold=cfg.success_threshold,
                 eval_goal_mode=cfg.eval_goal_mode,
                 check_conditioning=cfg.check_conditioning,
                 planner_control_mode=cfg.planner_control_mode,
@@ -588,8 +695,8 @@ def main() -> None:
 
             ckpt = {
                 "env_steps": env_steps,
-                "model_state_dict": diffusion.state_dict(),
-                "ema_model_state_dict": ema_diffusion.state_dict(),
+                "model_state_dict": model.state_dict(),
+                "ema_model_state_dict": ema_model.state_dict(),
                 "optimizer_state_dict": optimizer.state_dict(),
                 "config": asdict(cfg),
             }
@@ -609,6 +716,7 @@ def main() -> None:
             "episode_min_dist": float(ep["min_dist"]),
             "episode_success": float(ep["success"]),
             "num_episodes_in_replay": len(replay),
+            "goal_probe_var_a0": goal_probe_var,
         }
         payload.update(eval_payload)
         append_jsonl(metrics_path, payload)

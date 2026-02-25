@@ -171,8 +171,18 @@ def parse_args() -> Config:
     p.add_argument("--sac_alpha", type=float, default=Config.sac_alpha)
     p.add_argument("--sac_target_entropy", type=float, default=Config.sac_target_entropy)
 
-    p.add_argument("--her_k_per_transition", type=int, default=Config.her_k_per_transition)
-    p.add_argument("--her_future_sample_attempts", type=int, default=Config.her_future_sample_attempts)
+    p.add_argument(
+        "--her_k_per_transition",
+        type=int,
+        default=Config.her_k_per_transition,
+        help="HER relabel count per sampled transition; set to 0 for no-HER baseline.",
+    )
+    p.add_argument(
+        "--her_future_sample_attempts",
+        type=int,
+        default=Config.her_future_sample_attempts,
+        help="Future-goal sampling attempts per HER label (ignored when --her_k_per_transition=0).",
+    )
 
     p.add_argument(
         "--reward_mode",
@@ -414,14 +424,15 @@ def _build_her_sac_batch(
         raise ValueError("replay arrays must have equal length")
     if batch_size <= 0:
         raise ValueError("batch_size must be > 0")
-    if her_k_per_transition <= 0:
-        raise ValueError("her_k_per_transition must be > 0")
-    if future_sample_attempts <= 0:
-        raise ValueError("future_sample_attempts must be > 0")
+    if her_k_per_transition < 0:
+        raise ValueError("her_k_per_transition must be >= 0")
+    no_her = int(her_k_per_transition) == 0
+    if (not no_her) and future_sample_attempts <= 0:
+        raise ValueError("future_sample_attempts must be > 0 when HER is enabled")
 
     end_idx = _compute_episode_end_indices(tout)
     # Sample base indices then expand with k goals each, then trim to batch_size.
-    base_n = int(math.ceil(float(batch_size) / float(her_k_per_transition)))
+    base_n = int(batch_size) if no_her else int(math.ceil(float(batch_size) / float(her_k_per_transition)))
     idx_base = rng.integers(0, len(obs), size=base_n, endpoint=False)
 
     xs_obs: List[np.ndarray] = []
@@ -435,6 +446,27 @@ def _build_her_sac_batch(
         i = int(i)
         done = bool(term[i] or tout[i] or (i + 1) >= len(obs))
         next_obs = obs[i] if done else obs[i + 1]
+        if no_her:
+            g_idx = max(i, int(end_idx[i]) - 1)
+            goal_xy = obs[int(g_idx), :2].astype(np.float32)
+            dist_next = float(np.linalg.norm(next_obs[:2] - goal_xy))
+            if reward_mode == "sparse":
+                reward = float(sparse_success_value) if dist_next <= float(goal_success_threshold) else 0.0
+            elif reward_mode == "shaped":
+                reward = -float(dist_next) * float(shaped_reward_scale)
+                if dist_next <= float(goal_success_threshold):
+                    reward += float(shaped_success_bonus)
+            else:
+                raise ValueError(f"unknown reward_mode: {reward_mode}")
+
+            xs_obs.append(obs[i].copy())
+            xs_goal.append(goal_xy.copy())
+            xs_act.append(act[i].copy())
+            xs_next_obs.append(next_obs.copy())
+            xs_rew.append(float(reward))
+            xs_done.append(float(done))
+            continue
+
         for _ in range(int(her_k_per_transition)):
             g_idx = _sample_goal_index_for_transition(
                 rng=rng,
@@ -1075,8 +1107,10 @@ def main() -> None:
         raise ValueError("--goal_success_threshold must be > 0")
     if cfg.batch_size <= 0:
         raise ValueError("--batch_size must be > 0")
-    if cfg.her_k_per_transition <= 0:
-        raise ValueError("--her_k_per_transition must be > 0")
+    if cfg.her_k_per_transition < 0:
+        raise ValueError("--her_k_per_transition must be >= 0")
+    if cfg.her_k_per_transition > 0 and cfg.her_future_sample_attempts <= 0:
+        raise ValueError("--her_future_sample_attempts must be > 0 when HER is enabled")
     if cfg.reward_mode not in {"sparse", "shaped"}:
         raise ValueError("--reward_mode must be sparse|shaped")
     if cfg.replay_import_path and not Path(cfg.replay_import_path).is_file():

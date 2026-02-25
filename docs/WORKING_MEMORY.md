@@ -617,3 +617,350 @@ cd /root/ebm-online-rl-prototype/.worktrees/eqnet-maze2d && source /root/minicon
   - smoke dir removed and full dir present
   - `gate.err.log` empty
 - Validation summary check: `ALL_OK=1`.
+
+
+## 2026-02-24T08:24:41.760Z
+### Objective
+- Preserve a precise handoff snapshot so the next agent can continue the Maze2D validation workflow on `analysis/results-2026-02-24` without re-discovery.
+
+### Changes
+- No code or config files were modified in this handoff step; this entry is state capture only.
+- Captured repo context: workdir/repo root `/root/ebm-online-rl-prototype`, branch `analysis/results-2026-02-24`.
+- Captured untracked artifacts: `MUJOCO_LOG.TXT`, `gpt_pro_bundle_20260221.zip`, `gpt_pro_bundle_20260221b.zip`, `gpt_pro_bundle_20260224_full.zip`, `gpt_pro_bundle_20260224_full/`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`.
+- Captured task state: `pending=0 running=0 done=5 failed=0 blocked=2 canceled=0`.
+- Preserved remaining plan tail (steps 8-15): finish script contract/schema alignment, run mini callback pipeline, fix mismatches, then launch full validation runs and update memory/handoff docs.
+- Preserved unresolved blockers/questions: exact attached plan source, exact `relay-long-task-callback` interface, and whether to recreate `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt`.
+
+### Evidence
+- Path context: `/root/ebm-online-rl-prototype`.
+- Command snapshot: `git status --porcelain=v1`.
+- Untracked paths observed:
+- `/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT`
+- `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221.zip`
+- `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221b.zip`
+- `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full.zip`
+- `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full/`
+- `/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip`
+- `/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220/`
+- `/root/ebm-online-rl-prototype/memory/`
+- Plan tail references scripts:
+- `/root/ebm-online-rl-prototype/scripts/train_synthetic_maze2d_sac_her_probe.py`
+- `/root/ebm-online-rl-prototype/scripts/eval_synth_maze2d_checkpoint_prefix.py`
+- `/root/ebm-online-rl-prototype/scripts/exp_replan_horizon_sweep.py`
+- `/root/ebm-online-rl-prototype/scripts/exp_swap_matrix_maze2d.py`
+- `/root/ebm-online-rl-prototype/scripts/analyze_posterior_diversity.py`
+
+### Next steps
+- Get the exact attached plan content/path and map each remaining item to concrete commands.
+- Confirm the required `relay-long-task-callback` invocation contract for this repo.
+- Decide whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` must be regenerated in this cycle.
+- Execute remaining validation steps (8-15), starting with probe schema/checkpoint verification and mini callback pipeline.
+- After each completed run, update `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md` and `/root/ebm-online-rl-prototype/HANDOFF_LOG.md` with evidence-backed outcomes.
+
+## 2026-02-24T20:26:11+08:00
+### CRL baseline anchor (official contrastive_rl on Maze2D umaze)
+- Run id: `crl_contrastive_nce_ts18000_seed0_20260224-2019`
+- Run dir:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_contrastive_nce_ts18000_seed0_20260224-2019/`
+- Config summary:
+  - `env_name=maze2d_umaze`, `alg=contrastive_nce`, `seed=0`, `num_actors=1`, `max_number_of_steps=18000`
+  - start-goal extraction indices: `start_index=0`, `end_index=2`
+
+### Comparable evaluation outcome (fixed 12-query baseline set, h256)
+- Source query set:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/query_metrics.csv`
+- CRL fixed-query eval artifacts:
+  - `.../query_eval_summary.json`
+  - `.../query_eval_records.csv`
+- Metric (`threshold=0.2`, `horizon=256`):
+  - CRL (contrastive_nce): `success@h256 = 0.0833` (`1/12`)
+
+### Side-by-side snapshot (single-seed, preliminary)
+- Comparison artifact:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_vs_existing_baselines_20260224.json`
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_vs_existing_baselines_20260224.csv`
+- Values:
+  - Diffuser: `0.8333`
+  - SAC+HER sparse: `0.8333`
+  - GCBC+HER: `0.5833`
+  - CRL (official, nce, 18k-step): `0.0833`
+
+### Readout and next discriminative run
+- Readout: CRL is currently far below existing baselines under this first official-implementation run and single-seed budget.
+- Caution: likely undertraining relative to transition volume used by the other methods.
+- Next run (runnable):
+```bash
+cd /root/ebm-online-rl-prototype/third_party/google-research-contrastive_rl/contrastive_rl && source /root/miniconda3/bin/activate contrastive_rl && export MUJOCO_PY_MUJOCO_PATH=/root/.mujoco/mujoco210 && export LD_LIBRARY_PATH=/root/.mujoco/mujoco210/bin:/usr/lib/x86_64-linux-gnu:/root/miniconda3/envs/contrastive_rl/lib:$LD_LIBRARY_PATH && export D4RL_SUPPRESS_IMPORT_ERROR=1 && python lp_contrastive.py --env_name=maze2d_umaze --alg=contrastive_nce --start_index=0 --end_index=2 --seed=0 --num_actors=1 --max_number_of_steps=272000
+```
+
+## 2026-02-24T20:49:38+08:00
+### CRL fair-budget controls (transition + gradient alignment)
+- Added explicit CRL knobs in `lp_contrastive.py`:
+  - `--step_limiter_key` (`auto|actor_steps|learner_steps`)
+  - `--num_sgd_steps_per_step`
+  - `--samples_per_insert`
+  - `--samples_per_insert_tolerance_rate`
+  - `--min_replay_size`
+  - `--batch_size`
+- Added `step_limiter_key` to `ContrastiveConfig` and wired it into `distributed_layout.py` coordinator selection.
+- New launcher script:
+  - `scripts/run_crl_maze2d_fair_budget.py`
+  - derives fair CRL budget from baseline summaries and emits runnable `command.sh` + `fair_budget_config.json`.
+
+### Dry-run aligned budget (current Maze2D comparison root)
+- run dir:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-204814/`
+- computed targets:
+  - target transitions: `272338`
+  - aligned actor steps: `272384` (episode length `256`)
+  - target gradient descents: `18000`
+  - `num_sgd_steps_per_step=1`
+  - `learner_steps_target=18000`
+  - `samples_per_insert=16.91729323`
+  - `step_limiter_key=learner_steps`
+
+### Runnable next command
+```bash
+cd /root/ebm-online-rl-prototype && bash runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-204814/command.sh
+```
+- Guardrail: when deriving CRL `samples_per_insert`, auto-enforce the Reverb tolerance bound (`error_buffer >= 2*max(1,samples_per_insert)`) before launching, otherwise startup can abort in replay table construction.
+- Updated fair-budget launcher to auto-bump tolerance (`samples_per_insert_tolerance_rate`) to valid Reverb bounds; latest dry-run artifact: `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110/fair_budget_config.json`.
+- Runtime sanity: `timeout 30s` startup on the aligned command (`.../crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110/command.sh`) entered normal actor/evaluator loop with no immediate Reverb limiter exception.
+
+## ${NOW}
+### CRL fair-budget fixed-query comparison (completed)
+- Run id: `crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110`
+- Status:
+  - Training run reached limiter and terminated cleanly (`StepsLimiter: Max steps of 18000 was reached`) with final checkpoints saved under `/root/acme/b986f8ba-1180-11f1-bc6b-f638e7586226/checkpoints/`.
+  - Fixed-query evaluation completed and artifacts were written.
+- Comparable fixed-query result (`12` queries, `h256`, threshold `0.2`):
+  - `contrastive_rl_nce_fair_budget`: `0.9166666666666666` (`11/12`)
+- Comparison artifact now including fair CRL row:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_vs_existing_baselines_with_fair_20260224.csv`
+- Snapshot comparable values:
+  - Diffuser `0.8333`, SAC+HER sparse `0.8333`, GCBC+HER `0.5833`, CRL old `0.0833`, CRL fair-budget `0.9167`.
+- Immediate next step:
+  - Run at least `3` seeds with the same fair-budget contract to check if the CRL advantage holds beyond this single-seed result.
+
+## 2026-02-24T21:26:15+08:00
+### Correction
+- The prior section header `## ${NOW}` is a literal placeholder from a quoted-heredoc append.
+- Canonical timestamp for that section is `2026-02-24T21:26:15+08:00`.
+
+## 2026-02-24T21:30:15+08:00
+### Task t-0008: CRL fair-budget run-log parse + fixed-query refresh
+- Run analyzed:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110/run.log`
+- Parsed final terminal metrics artifact:
+  - `.../crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110/run_terminal_metrics.json`
+- Final metrics extracted from log:
+  - `Actor Steps` last seen: `360192`
+  - `Learner Steps` last seen: `18399`
+  - `Success 1000` last seen: `0.924`
+  - last line with all three fields: `Actor=360192`, `Learner=18321`, `Success1000=0.924`
+
+### Fixed 12-query h256 evaluation rerun
+- Re-ran:
+  - `python /tmp/eval_crl_fixed_queries.py`
+- Updated eval artifacts:
+  - `.../crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110/query_eval_summary.json`
+  - `.../crl_contrastive_nce_fair_t272384_g18000_sgd1_seed0_20260224-205110/query_eval_records.csv`
+- Observed comparable outcome (`12` fixed queries, `horizon=256`, threshold `0.2`):
+  - fair-budget CRL `success@h256 = 1.0000` (`12/12`)
+
+### Comparison table refresh
+- Updated canonical comparison files (requested):
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_vs_existing_baselines_20260224.json`
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/crl_vs_existing_baselines_20260224.csv`
+- Current comparable rows:
+  - Diffuser `0.8333`
+  - SAC+HER sparse `0.8333`
+  - GCBC+HER `0.5833`
+  - CRL old (`18k-step`) `0.0833`
+  - CRL fair-budget aligned run `1.0000`
+
+
+## 2026-02-24T13:31:04.615Z
+### Objective
+- Preserve the current `analysis/results-2026-02-24` experiment state so the next agent can resume validation and callback-based full runs without re-triage.
+
+### Changes
+- Updated `/root/ebm-online-rl-prototype/HANDOFF_LOG.md` (`+261` lines per `git diff --stat`).
+- Updated `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md` (`+161` lines per `git diff --stat`).
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221.zip`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260221b.zip`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full.zip`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full/`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220.zip`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/gpt_pro_handoff_bundle_20260220/`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/memory/`.
+- Left untracked artifacts in place for review/bundling: `/root/ebm-online-rl-prototype/scripts/run_crl_maze2d_fair_budget.py`.
+- Captured task snapshot: `pending=0 running=0 done=6 failed=0 blocked=2 canceled=0`.
+
+### Evidence
+- Command: `git status --porcelain=v1` (branch `analysis/results-2026-02-24`, modified + untracked files listed above).
+- Command: `git diff --stat` (`HANDOFF_LOG.md | 261`, `docs/WORKING_MEMORY.md | 161`, total `422 insertions`).
+- Plan tail recorded with remaining items 8-15, ending in callback-based full validations and post-run memory/handoff updates.
+
+### Next steps
+- Provide the exact attached plan content or path so task mapping is exact (not inferred from filenames).
+- Confirm the precise `relay-long-task-callback` command/interface expected in this repo.
+- Confirm whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` should be recreated in this cycle.
+- Resume from plan item 8: smoke verification for SAC/HER probe, then script hardening for eval/replan/swap/diversity analysis.
+- Run mini end-to-end callback pipeline, fix schema/analysis mismatches, then launch full validation runs one-by-one.
+- After each completion, append evidence-backed updates to `/root/ebm-online-rl-prototype/HANDOFF_LOG.md` and refresh `/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md`.
+
+## 2026-02-24T21:44:29+08:00
+### CRL obsolete-run cleanup (user requested)
+- Cleaned up obsolete old CRL baseline artifacts (`crl_contrastive_nce_ts18000_seed0_20260224-2019` + `_recheck_20260224`) by moving them under:
+  - `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/archive_irrelevant_20260224/`
+- Removed all `method=contrastive_rl_nce` rows from active comparison tables:
+  - `.../crl_vs_existing_baselines_20260224.{json,csv}`
+  - `.../crl_vs_existing_baselines_with_fair_20260224.{json,csv}`
+- Active comparable rows now reflect only relevant methods:
+  - Diffuser `0.8333`
+  - SAC+HER sparse `0.8333`
+  - GCBC+HER `0.5833`
+  - CRL fair-budget (`1.0000` in direct table; `0.9167` in with_fair table)
+- Note: old run data is archived (not deleted) for auditability.
+
+## 2026-02-24T22:01:58+08:00
+### CRL old-run hard delete
+- Completed user-requested permanent deletion of obsolete archived CRL-old folders:
+  - `.../archive_irrelevant_20260224/crl_contrastive_nce_ts18000_seed0_20260224-2019`
+  - `.../archive_irrelevant_20260224/crl_contrastive_nce_ts18000_seed0_20260224-2019_recheck_20260224`
+- Removed empty archive directory `.../archive_irrelevant_20260224`.
+- Active comparison root now excludes old CRL run directories entirely.
+
+## 2026-02-25T00:23:32+08:00
+### EqM minimal-change pointmass implementation + tuning (new)
+- Implemented EqM drop-in module and integrated online algo switch:
+  - `ebm_online_rl/online/eqm.py`
+  - `ebm_online_rl/online/__init__.py`
+  - `scripts/online_pointmass_goal_diffuser.py` (`--algo {diffusion,eqm}`, EqM knobs, goal-influence probe)
+- Run root:
+  - `runs/analysis/pointmass_eqm_minchange_20260224-230943/`
+- Key summaries:
+  - `eqm_sweep_2k_summary.json`
+  - `eqm_sweep_2k_summary.csv`
+  - `eqm_vs_diffusion_compare_summary.json`
+
+### Latest comparable readout (pointmass, matched budgets)
+- 2k smoke:
+  - Diffusion: `eval_success_rate=0.00`
+  - EqM (`k=25`, `step=0.05`, `c=1.0`): `eval_success_rate=0.10`
+- EqM 2k sweep best practical config:
+  - `k=25`, `step=0.10`, `c=1.0` -> `eval_success_rate=0.15`
+- 6k matched control (`eval_every=2000`):
+  - EqM (`k=25`, `step=0.10`, `c=1.0`): `0.15 @2k`, `0.10 @4k`, `0.15 @6k`
+  - Diffusion (`n_diffusion_steps=8`): `0.00 @2k`, `0.00 @4k`, `0.05 @6k`
+- EqM action-mode ablation (`planner_control_mode=action`, 2k):
+  - `eval_success_rate=0.00` (worse than waypoint for this setup)
+
+### Current decision
+- Keep EqM waypoint config as current pointmass best:
+  - `--eqm_steps 25 --eqm_step_size 0.10 --eqm_c_scale 1.0 --planner_control_mode waypoint`
+- Interpretation: EqM is viable and stronger than matched Diffusion in this minimal-change pointmass loop, but absolute success is still modest and below stronger Maze2D baselines.
+
+### Next discriminating run
+- Port same EqM module into Maze2D probe with minimal API swap and run matched-budget side-by-side eval against current Diffusion/SAC/GCBC tables.
+
+## 2026-02-25T02:23:00+08:00
+### EqM Maze2D budget-match sweep (completed)
+- Run root:
+  - `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/`
+- Config family (both runs):
+  - `train_steps=6000`, `online_rounds=4`, `online_train_steps_per_round=3000`, `online_collect_transition_budget_per_round=4096`
+  - `eqm_steps=25`, `eqm_c_scale=1.0`, `eqm_step_size in {0.10,0.08}`
+- Final `h256` results:
+  - `eqm_k25_s010_budgetmatch`: `0.7500` (`9/12`)
+  - `eqm_k25_s008_budgetmatch`: `0.7500` (`9/12`)
+- Best observed checkpoints (from `progress_metrics.csv`):
+  - both variants reached `0.9167` at step `8000`
+- Comparator snapshot (`h256`):
+  - Diffuser `0.8333`, SAC+HER sparse `0.8333`, GCBC+HER `0.5833`
+- New summary artifacts:
+  - `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_budgetmatch_summary.json`
+  - `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_budgetmatch_summary.csv`
+  - `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_vs_existing_baselines_20260225.json`
+  - `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_vs_existing_baselines_20260225.csv`
+
+### Matched-budget no-HER control pipeline (running)
+- Run root:
+  - `runs/analysis/synth_maze2d_diffuser_probe/noher_budgetmatch_20260225-022110/`
+- Launcher:
+  - `/tmp/run_noher_budgetmatch_overnight.sh`
+  - PID file: `/tmp/run_noher_budgetmatch_overnight.pid` (`39949` at launch)
+  - Driver log: `/tmp/run_noher_budgetmatch_overnight.out`
+  - In-run log: `runs/.../driver.log`
+- Execution order:
+  1. `sac_noher_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0`
+  2. `gcbc_noher_ts6000_or4_ep64_t3000_rp16_gp040_seed0`
+- Planned output:
+  - `runs/.../noher_vs_her_summary.json`
+  - `runs/.../noher_vs_her_summary.csv`
+- Purpose:
+  - Quantify absolute HER gain (`HER - noHER`) for SAC and GCBC under the same budget/protocol as existing baseline rows.
+
+### Correction: no-HER overnight launcher method
+- The `nohup` chained launcher (`/tmp/run_noher_budgetmatch_overnight.sh`) is not reliable under the current exec wrapper for multi-stage sequencing.
+- Observed behavior: supervisor shell disappeared; only first SAC subprocess persisted as orphan.
+- Mitigation applied: killed orphan SAC subprocesses and switched plan to relay-managed `job_start` continuation for unattended SAC->GCBC->summary sequencing.
+
+## 2026-02-25T02:45:36+08:00
+### Task t-0009 complete: matched-budget HER gain readout (SAC vs GCBC)
+- Final no-HER run root:
+  - `runs/analysis/synth_maze2d_diffuser_probe/noher_budgetmatch_20260225-022453/`
+- Completion status:
+  - `sac_noher_sparse_ts6000_or4_ep64_t3000_rp16_gp040_seed0`: `rc=0`
+  - `gcbc_noher_ts6000_or4_ep64_t3000_rp16_gp040_seed0`: `rc=0`
+- Comparable `h256` (`12` query protocol):
+  - SAC+HER sparse: `0.8333` (`10/12`)
+  - SAC no-HER sparse: `0.8333` (`10/12`)
+  - SAC HER gain: `+0.0000`
+  - GCBC+HER: `0.5833` (`7/12`)
+  - GCBC no-HER: `0.0833` (`1/12`)
+  - GCBC HER gain: `+0.5000` absolute (`+6/12`, `+600%` relative vs no-HER)
+- Artifacts:
+  - `runs/analysis/synth_maze2d_diffuser_probe/noher_budgetmatch_20260225-022453/noher_vs_her_summary.json`
+  - `runs/analysis/synth_maze2d_diffuser_probe/noher_budgetmatch_20260225-022453/noher_vs_her_summary.csv`
+- Current implication:
+  - In this setup, HER is critical for GCBC performance but not for SAC sparse performance.
+
+
+## 2026-02-24T18:46:21.686Z
+### Objective
+- Advance `analysis/results-2026-02-24` toward callback-ready Maze2D validation by aligning probe/training scripts with checkpoint/output contracts and preserving experiment continuity for the next agent.
+
+### Changes
+- Expanded handoff continuity docs with major updates to `HANDOFF_LOG.md` and `docs/WORKING_MEMORY.md`.
+- Updated `ebm_online_rl/online/__init__.py` and added `ebm_online_rl/online/eqm.py`.
+- Modified `scripts/online_pointmass_goal_diffuser.py` for updated online/diffuser behavior and run contract alignment.
+- Modified `scripts/synthetic_maze2d_diffuser_probe.py` for schema/contract compatibility.
+- Modified `scripts/synthetic_maze2d_gcbc_her_probe.py` for schema/contract compatibility.
+- Modified `scripts/synthetic_maze2d_sac_her_probe.py` for schema/contract compatibility.
+- Added `scripts/run_crl_maze2d_fair_budget.py`.
+- Added/retained run artifacts and bundles: `MUJOCO_LOG.TXT`, `gpt_pro_bundle_20260221.zip`, `gpt_pro_bundle_20260221b.zip`, `gpt_pro_bundle_20260224_full.zip`, `gpt_pro_bundle_20260224_full/`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`.
+- Current execution summary indicates `done=7`, `blocked=2`, `pending=0`, `running=0`.
+
+### Evidence
+- Workdir/repo root: `/root/ebm-online-rl-prototype`.
+- Branch: `analysis/results-2026-02-24`.
+- Command: `git status --porcelain=v1` (shows modified and untracked files listed above).
+- Command: `git diff --stat` (reports `7 files changed, 1244 insertions(+), 70 deletions(-)` across tracked edits).
+- Plan tail indicates remaining items around SAC/HER smoke verification, checkpoint-prefix eval aggregation, horizon-sweep and swap-matrix experiments, posterior-diversity analysis, mini end-to-end callback run, and full validation rollout with memory/handoff updates.
+
+### Next steps
+- Resolve blocker 1: obtain the exact attached plan content/path to map remaining tasks precisely.
+- Resolve blocker 2: confirm the exact `relay-long-task-callback` command/interface expected in this repo.
+- Confirm whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` must be recreated in this cycle.
+- Run syntax/help/smoke verification for `scripts/synthetic_maze2d_sac_her_probe.py` under the final schema/checkpoint contract.
+- Implement or finalize `scripts/eval_synth_maze2d_checkpoint_prefix.py` robust aggregation outputs.
+- Implement or finalize `scripts/exp_replan_horizon_sweep.py` with callback-ready metadata/output.
+- Implement or finalize `scripts/exp_swap_matrix_maze2d.py` with callback-ready metadata/output.
+- Implement or finalize `scripts/analyze_posterior_diversity.py` to consume produced outputs and emit validation summaries.
+- Execute a mini end-to-end callback pipeline, fix schema/analysis mismatches, then launch full validation runs sequentially and append evidence-backed updates to `docs/WORKING_MEMORY.md` and `HANDOFF_LOG.md`.
+
+### Reporting guardrail (2026-02-25)
+- Always begin experiment results with an algorithm glossary block before metrics: define symbol semantics and units explicitly (`K := eqm_steps = number of EqM refinement iterations`, `S := eqm_step_size = per-step descent size`) and only then use compact run tags (`k25_s010`, etc.).
