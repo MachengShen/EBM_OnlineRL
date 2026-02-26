@@ -4090,3 +4090,20 @@ EqM research validation experiments (H1, H2, H3) on Maze2D umaze. Three hypothes
 ### Repo state
 - Branch: `analysis/results-2026-02-24`
 - Dirty: yes (new scripts + results not yet committed)
+
+### Commit pushed
+- `10afba1` maze2d: add EqM research validation scripts (H1/H2/H3) and results
+- Pushed to `origin/analysis/results-2026-02-24`
+
+## 2026-02-26T15:15:00Z
+
+### Scope
+EqM mechanistic follow-up experiments (Tasks A/B/C) per GPT-Pro proposal.
+
+**Task A (H2 blockwise locality):** obs→obs extremely local (27x ratio on dataset), act→act locality degrades with EqM iteration (240x noise → 3.1x converged). Artifact: `runs/analysis/eqm_h2_blockwise_20260226-145248/`
+
+**Task C (H1 alignment sweeps):** dot+=1.0 and descent=1.0 for ALL off-equilibrium regimes (corrupted, eqm_iter). Dataset baseline dot+=0.43 confirms operating-point artifact. H1 now STRONGLY SUPPORTED. Artifact: `runs/analysis/eqm_h1_alignment_sweeps_20260226-145345/`
+
+**Task B (H3 exec-level waypoint):** wp_hit=0.26 with constraint vs 0.00 baseline. Goal_hit=0.88. Large gap from imagination-level (100%). Artifact: `runs/analysis/eqm_waypoint_exec_h3_20260226-150220/`
+
+Implementation notes: `docs/IMPLEMENTATION_NOTES_EQM_FOLLOWUPS.md`
