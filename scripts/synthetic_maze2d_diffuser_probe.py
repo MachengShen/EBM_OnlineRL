@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 import random
+import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -26,6 +27,105 @@ from diffuser.models.helpers import Losses, apply_conditioning
 from diffuser.models.temporal import TemporalUnet
 from diffuser.utils.arrays import batch_to_device
 from diffuser.utils.training import EMA
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(_PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(_PROJECT_ROOT))
+
+from ebm_online_rl.online.scaffold import apply_pos_only_anchors_, build_anchor_times, extract_anchor_xy
+
+ALIGNMENT_PROFILE_EQNET_SELF_IMPROVE_V1 = "eqnet_self_improve_v1"
+ALIGNMENT_PROFILE_LEGACY_OFFLINE = "legacy_offline"
+ALIGNMENT_PROFILE_CHOICES = (
+    ALIGNMENT_PROFILE_EQNET_SELF_IMPROVE_V1,
+    ALIGNMENT_PROFILE_LEGACY_OFFLINE,
+)
+
+
+def validate_eqnet_alignment_policy(
+    cfg: Any,
+    *,
+    script_name: str,
+    profile: str,
+) -> None:
+    profile_norm = str(profile).strip().lower()
+    if profile_norm == ALIGNMENT_PROFILE_LEGACY_OFFLINE:
+        return
+    if profile_norm != ALIGNMENT_PROFILE_EQNET_SELF_IMPROVE_V1:
+        raise ValueError(
+            f"[alignment] Unknown profile '{profile}'. Expected one of: "
+            f"{', '.join(ALIGNMENT_PROFILE_CHOICES)}"
+        )
+
+    violations: List[str] = []
+    if int(getattr(cfg, "n_episodes", 0)) != 0:
+        violations.append("--n_episodes must be 0")
+    if int(getattr(cfg, "train_steps", 0)) != 0:
+        violations.append("--train_steps must be 0")
+    if not bool(getattr(cfg, "online_self_improve", False)):
+        violations.append("--online_self_improve must be enabled")
+    if int(getattr(cfg, "online_rounds", 0)) <= 0:
+        violations.append("--online_rounds must be > 0")
+    if int(getattr(cfg, "online_collect_transition_budget_per_round", 0)) <= 0:
+        violations.append("--online_collect_transition_budget_per_round must be > 0")
+    if hasattr(cfg, "disable_online_collection") and bool(getattr(cfg, "disable_online_collection")):
+        violations.append("--disable_online_collection must be false")
+
+    num_eval_queries = int(getattr(cfg, "num_eval_queries", 0))
+    query_batch_size = int(getattr(cfg, "query_batch_size", 0))
+    eval_trajectories = num_eval_queries * query_batch_size
+    if num_eval_queries <= 0 or query_batch_size <= 0 or eval_trajectories != 16:
+        violations.append(
+            "--num_eval_queries * --query_batch_size must equal 16 "
+            f"(got {num_eval_queries} * {query_batch_size} = {eval_trajectories})"
+        )
+
+    if violations:
+        joined = "; ".join(violations)
+        raise ValueError(
+            f"[alignment] {script_name} violates profile={ALIGNMENT_PROFILE_EQNET_SELF_IMPROVE_V1}: {joined}. "
+            f"To intentionally run legacy/offline config, pass "
+            f"--alignment_profile {ALIGNMENT_PROFILE_LEGACY_OFFLINE}."
+        )
+
+
+def _prepare_scaffold_settings(
+    scaffold_cfg: Mapping[str, Any] | None,
+    *,
+    total_steps: int,
+    horizon: int,
+) -> Dict[str, Any] | None:
+    if not scaffold_cfg or not bool(scaffold_cfg.get("enabled", False)):
+        return None
+    if total_steps <= 0:
+        raise ValueError(f"total_steps must be > 0, got {total_steps}")
+    if horizon <= 0:
+        raise ValueError(f"horizon must be > 0, got {horizon}")
+
+    anchor_mode = str(scaffold_cfg.get("anchor_mode", "pos_only_xy"))
+    if anchor_mode != "pos_only_xy":
+        raise ValueError(f"Unsupported scaffold anchor_mode={anchor_mode}; expected 'pos_only_xy'")
+
+    stride = max(1, int(scaffold_cfg.get("stride", 8)))
+    insert_step_raw = scaffold_cfg.get("insert_step", None)
+    if insert_step_raw is None:
+        insert_frac = float(scaffold_cfg.get("insert_frac", 0.3))
+        insert_step = int(round(insert_frac * max(0, total_steps - 1)))
+    else:
+        insert_step = int(insert_step_raw)
+    insert_step = max(0, min(insert_step, max(0, total_steps - 1)))
+
+    anchor_times = build_anchor_times(horizon=int(horizon), stride=stride)
+    if bool(scaffold_cfg.get("exclude_endpoints", True)):
+        anchor_times = [t for t in anchor_times if t not in (0, int(horizon) - 1)]
+    if not anchor_times and int(horizon) > 2:
+        anchor_times = [int(horizon) // 2]
+
+    return {
+        "insert_step": int(insert_step),
+        "anchor_times": anchor_times,
+        "log_insert": bool(scaffold_cfg.get("log_insert", False)),
+    }
 
 
 class EquilibriumMatchingDiffusion(torch.nn.Module):
@@ -95,7 +195,18 @@ class EquilibriumMatchingDiffusion(torch.nn.Module):
         return self.loss_fn(pred, target)
 
     @torch.no_grad()
-    def conditional_sample(self, cond, *args, horizon=None, verbose=True, return_diffusion=False, **kwargs):
+    def conditional_sample(
+        self,
+        cond,
+        *args,
+        horizon=None,
+        verbose=True,
+        return_diffusion=False,
+        scaffold_cfg: Mapping[str, Any] | None = None,
+        eqm_eta_start: float | None = None,
+        eqm_eta_end: float | None = None,
+        **kwargs,
+    ):
         del args, kwargs, verbose
         batch_size = len(cond[0])
         horizon = int(horizon or self.horizon)
@@ -105,12 +216,35 @@ class EquilibriumMatchingDiffusion(torch.nn.Module):
         x = apply_conditioning(x, cond, self.action_dim)
         diffusion = [x] if return_diffusion else None
         t0 = torch.zeros((batch_size,), device=device, dtype=torch.long)
-        for _ in range(max(1, self.n_eqm_steps)):
+        total_steps = max(1, int(self.n_eqm_steps))
+        scaffold = _prepare_scaffold_settings(
+            scaffold_cfg=scaffold_cfg,
+            total_steps=total_steps,
+            horizon=horizon,
+        )
+        anchors_xy = None
+        eta_start = float(self.step_size if eqm_eta_start is None else eqm_eta_start)
+        eta_end = float(self.step_size if eqm_eta_end is None else eqm_eta_end)
+
+        for k in range(total_steps):
+            frac = float(k) / float(max(1, total_steps - 1))
+            eta_k = eta_start + (eta_end - eta_start) * frac
             grad = self.model(x, cond, t0)
-            x = x - float(self.step_size) * grad
+            x = x - float(eta_k) * grad
             if self.clip_denoised:
                 x = torch.clamp(x, -1.0, 1.0)
             x = apply_conditioning(x, cond, self.action_dim)
+
+            if scaffold is not None and k == int(scaffold["insert_step"]):
+                anchors_xy = extract_anchor_xy(x, self.action_dim, scaffold["anchor_times"])
+                if bool(scaffold["log_insert"]):
+                    print(
+                        f"[scaffold:eqm] inserted at step={k} "
+                        f"times={scaffold['anchor_times']}",
+                        flush=True,
+                    )
+            if anchors_xy is not None:
+                apply_pos_only_anchors_(x, self.action_dim, anchors_xy)
             if diffusion is not None:
                 diffusion.append(x)
 
@@ -281,8 +415,11 @@ class Config:
     seed: int = 0
     device: str = "cuda:0"
     logdir: str = ""
+    alignment_profile: str = ALIGNMENT_PROFILE_EQNET_SELF_IMPROVE_V1
     algo: str = "diffusion"  # {"diffusion","eqm"}
-    n_episodes: int = 400
+    # Optional random-policy bootstrap replay size. If set to 0 and no replay is imported,
+    # the run bootstraps replay by collecting with the current (possibly untrained) policy.
+    n_episodes: int = 0
     episode_len: int = 192
     horizon: int = 64
     n_diffusion_steps: int = 64
@@ -294,7 +431,8 @@ class Config:
     model_dim: int = 64
     model_dim_mults: str = "1,2,4"
     learning_rate: float = 2e-4
-    train_steps: int = 4000
+    # Self-improvement-first default: skip offline gradient updates.
+    train_steps: int = 0
     batch_size: int = 128
     grad_clip: float = 1.0
     val_frac: float = 0.1
@@ -311,14 +449,15 @@ class Config:
     max_path_length: int = 256
     query: str = "0.9,2.9:2.9,2.9;0.9,2.9:2.9,0.9;2.9,0.9:0.9,2.9"
     query_mode: str = "diverse"
-    num_eval_queries: int = 24
+    # 8 x 2 = 16 eval trajectories per checkpoint by default.
+    num_eval_queries: int = 8
     query_bank_size: int = 256
     query_angle_bins: int = 16
     query_min_distance: float = 1.0
     query_resample_each_eval: bool = True
     query_resample_seed_stride: int = 7919
-    query_batch_size: int = 6
-    eval_goal_every: int = 5000
+    query_batch_size: int = 2
+    eval_goal_every: int = 1000
     goal_success_threshold: float = 0.5
     eval_rollout_mode: str = "receding_horizon"
     eval_rollout_replan_every_n_steps: int = 8
@@ -327,6 +466,17 @@ class Config:
     eval_waypoint_mode: str = "none"  # {"none","feasible","infeasible"}
     eval_waypoint_t: int = 0  # 0 => horizon//2
     eval_waypoint_eps: float = 0.2
+    # Optional scaffold controls for planning-time sampling.
+    scaffold: str = "none"  # {"none","insert_mid"}
+    scaffold_stride: int = 8
+    scaffold_insert_frac: float = 0.3
+    scaffold_insert_step: int = -1  # <0 => derive from insert_frac
+    scaffold_log_insert: bool = False
+    scaffold_exclude_endpoints: bool = True
+    # Optional sampler overrides for eval/online planning.
+    eval_diffusion_steps_override: int = 0  # <=0 => disabled
+    eval_eqm_eta_start: float | None = None
+    eval_eqm_eta_end: float | None = None
     # Non-privileged default: do not use maze-geometry-aware candidate selection.
     wall_aware_planning: bool = False
     wall_aware_plan_samples: int = 1
@@ -356,16 +506,16 @@ class Config:
     plan_score_prefix_len: int = -1
 
     save_checkpoint_every: int = 5000
-    online_self_improve: bool = False
+    online_self_improve: bool = True
     disable_online_collection: bool = False
-    online_rounds: int = 0
+    online_rounds: int = 8
     online_train_steps_per_round: int = 2000
     online_collect_episodes_per_round: int = 32
     online_collect_episode_len: int = 256
     # If >0, collect until this many *accepted* transitions are added per online round.
     # This makes the online sample budget explicit (env-step budget), which matters once
     # episodes can end early on success.
-    online_collect_transition_budget_per_round: int = 0
+    online_collect_transition_budget_per_round: int = 3000
     online_replan_every_n_steps: int = 8
     online_goal_geom_p: float = 0.08
     online_goal_geom_min_k: int = 8
@@ -401,6 +551,37 @@ class Config:
     fixed_replay_snapshot_npz: str = ""
 
 
+class _IdentityNormalizer:
+    """Fallback normalizer used only for replay bootstrap before dataset fitting."""
+
+    def normalize(self, x: np.ndarray, key: str) -> np.ndarray:
+        _ = key
+        return np.asarray(x, dtype=np.float32)
+
+    def unnormalize(self, x: np.ndarray, key: str) -> np.ndarray:
+        _ = key
+        return np.asarray(x, dtype=np.float32)
+
+
+class PlanningDatasetStub:
+    """Minimal dataset interface required by planning samplers."""
+
+    def __init__(self, observation_dim: int, action_dim: int) -> None:
+        self.observation_dim = int(observation_dim)
+        self.action_dim = int(action_dim)
+        self.normalizer = _IdentityNormalizer()
+
+
+def make_empty_replay_dataset(observation_dim: int, action_dim: int) -> Dict[str, np.ndarray]:
+    return {
+        "observations": np.zeros((0, int(observation_dim)), dtype=np.float32),
+        "actions": np.zeros((0, int(action_dim)), dtype=np.float32),
+        "rewards": np.zeros((0,), dtype=np.float32),
+        "terminals": np.zeros((0,), dtype=np.bool_),
+        "timeouts": np.zeros((0,), dtype=np.bool_),
+    }
+
+
 class SyntheticDatasetEnv:
     """
     Minimal env-like object expected by GoalDataset/sequence_dataset.
@@ -432,13 +613,32 @@ def parse_args() -> Config:
     parser.add_argument("--device", type=str, default=Config.device)
     parser.add_argument("--logdir", type=str, default=Config.logdir)
     parser.add_argument(
+        "--alignment_profile",
+        type=str,
+        default=Config.alignment_profile,
+        choices=list(ALIGNMENT_PROFILE_CHOICES),
+        help=(
+            "Configuration policy: "
+            "'eqnet_self_improve_v1' enforces self-improvement-first defaults; "
+            "'legacy_offline' explicitly opts out."
+        ),
+    )
+    parser.add_argument(
         "--algo",
         type=str,
         default=Config.algo,
         choices=["diffusion", "eqm"],
         help="Trajectory learner backend. diffusion=DDPM, eqm=equilibrium matching descent sampler.",
     )
-    parser.add_argument("--n_episodes", type=int, default=Config.n_episodes)
+    parser.add_argument(
+        "--n_episodes",
+        type=int,
+        default=Config.n_episodes,
+        help=(
+            "Initial random-policy replay episodes. "
+            "Set 0 to disable random offline bootstrap and start from current-policy collection."
+        ),
+    )
     parser.add_argument("--episode_len", type=int, default=Config.episode_len)
     parser.add_argument("--horizon", type=int, default=Config.horizon)
     parser.add_argument("--n_diffusion_steps", type=int, default=Config.n_diffusion_steps)
@@ -564,6 +764,75 @@ def parse_args() -> Config:
         type=float,
         default=Config.eval_waypoint_eps,
         help="Waypoint hit threshold in qpos xy distance.",
+    )
+    parser.add_argument(
+        "--scaffold",
+        type=str,
+        default=Config.scaffold,
+        choices=["none", "insert_mid"],
+        help="Optional planning scaffold mode. 'insert_mid' enables sparse mid-sampling xy anchors.",
+    )
+    parser.add_argument(
+        "--scaffold_stride",
+        type=int,
+        default=Config.scaffold_stride,
+        help="Anchor stride in trajectory time for scaffold insertion.",
+    )
+    parser.add_argument(
+        "--scaffold_insert_frac",
+        type=float,
+        default=Config.scaffold_insert_frac,
+        help="Insertion fraction in sampler iterations when --scaffold=insert_mid.",
+    )
+    parser.add_argument(
+        "--scaffold_insert_step",
+        type=int,
+        default=Config.scaffold_insert_step,
+        help="<0: derive insertion step from insert_frac; >=0: explicit sampler-step index.",
+    )
+    parser.add_argument(
+        "--scaffold_log_insert",
+        dest="scaffold_log_insert",
+        action="store_true",
+        help="Log one scaffold insertion line per sampled trajectory.",
+    )
+    parser.add_argument(
+        "--no_scaffold_log_insert",
+        dest="scaffold_log_insert",
+        action="store_false",
+        help="Disable scaffold insertion logs.",
+    )
+    parser.set_defaults(scaffold_log_insert=Config.scaffold_log_insert)
+    parser.add_argument(
+        "--scaffold_exclude_endpoints",
+        dest="scaffold_exclude_endpoints",
+        action="store_true",
+        help="Exclude t=0 and t=H-1 from scaffold anchor times (recommended).",
+    )
+    parser.add_argument(
+        "--no_scaffold_exclude_endpoints",
+        dest="scaffold_exclude_endpoints",
+        action="store_false",
+        help="Allow endpoints as scaffold anchors.",
+    )
+    parser.set_defaults(scaffold_exclude_endpoints=Config.scaffold_exclude_endpoints)
+    parser.add_argument(
+        "--eval_diffusion_steps_override",
+        type=int,
+        default=Config.eval_diffusion_steps_override,
+        help="Override denoising steps during planning/eval (<=0 disables override).",
+    )
+    parser.add_argument(
+        "--eval_eqm_eta_start",
+        type=float,
+        default=Config.eval_eqm_eta_start,
+        help="Optional EqM eta at refinement step 0 for planning/eval (default: use checkpoint step_size).",
+    )
+    parser.add_argument(
+        "--eval_eqm_eta_end",
+        type=float,
+        default=Config.eval_eqm_eta_end,
+        help="Optional EqM eta at final refinement step for planning/eval (default: use checkpoint step_size).",
     )
     parser.add_argument(
         "--wall_aware_planning",
@@ -853,6 +1122,35 @@ def parse_float_list(raw: str, arg_name: str) -> Tuple[float, ...]:
     if not vals:
         raise ValueError(f"{arg_name} must contain at least one float")
     return vals
+
+
+def build_sampling_cfg_from_config(cfg: Config) -> Dict[str, Any]:
+    scaffold_cfg: Dict[str, Any] | None = None
+    if str(cfg.scaffold) != "none":
+        scaffold_cfg = {
+            "enabled": True,
+            "anchor_mode": "pos_only_xy",
+            "stride": int(cfg.scaffold_stride),
+            "insert_step": None if int(cfg.scaffold_insert_step) < 0 else int(cfg.scaffold_insert_step),
+            "insert_frac": float(cfg.scaffold_insert_frac),
+            "exclude_endpoints": bool(cfg.scaffold_exclude_endpoints),
+            "log_insert": bool(cfg.scaffold_log_insert),
+        }
+    diffusion_steps_override = (
+        int(cfg.eval_diffusion_steps_override)
+        if int(cfg.eval_diffusion_steps_override) > 0
+        else None
+    )
+    return {
+        "scaffold_cfg": scaffold_cfg,
+        "diffusion_steps_override": diffusion_steps_override,
+        "eqm_eta_start": (
+            float(cfg.eval_eqm_eta_start) if cfg.eval_eqm_eta_start is not None else None
+        ),
+        "eqm_eta_end": (
+            float(cfg.eval_eqm_eta_end) if cfg.eval_eqm_eta_end is not None else None
+        ),
+    }
 
 
 def threshold_tag(value: float) -> str:
@@ -1356,6 +1654,63 @@ def sample_geometric_start_goal_pair(
     raise RuntimeError("Failed to sample start/goal pair from replay observations.")
 
 
+def maze_cell_to_qpos_xy(
+    cell_wh: np.ndarray,
+    maze_shape: Tuple[int, int],
+    rng: np.random.Generator,
+    jitter: float = 0.35,
+) -> np.ndarray:
+    w = int(cell_wh[0])
+    h = int(cell_wh[1])
+    width, height = int(maze_shape[0]), int(maze_shape[1])
+    x = (float(w) - 0.5 * float(width)) + 0.5
+    y = (float(h) - 0.5 * float(height)) + 0.5
+    if jitter > 0.0:
+        x += float(rng.uniform(-jitter, jitter))
+        y += float(rng.uniform(-jitter, jitter))
+    return np.asarray([x, y], dtype=np.float32)
+
+
+def sample_start_goal_pair_without_replay(
+    env: gym.Env,
+    rng: np.random.Generator,
+    maze_arr: np.ndarray | None,
+    min_distance: float,
+    max_attempts: int = 512,
+) -> Tuple[np.ndarray, np.ndarray, int, float]:
+    base_env = env.unwrapped
+    if maze_arr is not None and hasattr(base_env, "reset_to_location"):
+        free_cells = np.argwhere(np.asarray(maze_arr) != 10)
+        if len(free_cells) >= 2:
+            for _ in range(max_attempts):
+                s_idx = int(rng.integers(0, len(free_cells)))
+                g_idx = int(rng.integers(0, len(free_cells)))
+                if s_idx == g_idx:
+                    continue
+                start_xy = maze_cell_to_qpos_xy(free_cells[s_idx], maze_arr.shape, rng)
+                goal_xy = maze_cell_to_qpos_xy(free_cells[g_idx], maze_arr.shape, rng)
+                dist = float(np.linalg.norm(goal_xy - start_xy))
+                if dist >= float(min_distance):
+                    return start_xy, goal_xy, 1, dist
+
+    obs0 = safe_reset(env)
+    start_xy = np.asarray(obs0[:2], dtype=np.float32)
+    low = np.asarray(env.observation_space.low, dtype=np.float32)[:2]
+    high = np.asarray(env.observation_space.high, dtype=np.float32)[:2]
+    if not np.all(np.isfinite(low)) or not np.all(np.isfinite(high)):
+        low = np.asarray([-2.0, -2.0], dtype=np.float32)
+        high = np.asarray([2.0, 2.0], dtype=np.float32)
+
+    for _ in range(max_attempts):
+        goal_xy = rng.uniform(low, high).astype(np.float32)
+        dist = float(np.linalg.norm(goal_xy - start_xy))
+        if dist >= float(min_distance):
+            return start_xy, goal_xy, 1, dist
+
+    fallback_goal = (start_xy + np.asarray([1.0, 1.0], dtype=np.float32)).astype(np.float32)
+    return start_xy, fallback_goal, 1, float(np.linalg.norm(fallback_goal - start_xy))
+
+
 def resolve_waypoint_t(planning_horizon: int, raw_waypoint_t: int) -> int:
     if int(planning_horizon) < 3:
         return max(0, int(planning_horizon) - 1)
@@ -1437,6 +1792,81 @@ def normalize_condition(dataset: GoalDataset, obs: np.ndarray, device: torch.dev
 
 
 @torch.no_grad()
+def _conditional_sample_with_scaffold(
+    model: GaussianDiffusion,
+    cond: Dict[int, torch.Tensor],
+    *,
+    horizon: int,
+    scaffold_cfg: Mapping[str, Any] | None = None,
+    diffusion_steps_override: int | None = None,
+    eqm_eta_start: float | None = None,
+    eqm_eta_end: float | None = None,
+    verbose: bool = False,
+    return_diffusion: bool = False,
+):
+    is_eqm_like = hasattr(model, "n_eqm_steps") and hasattr(model, "step_size")
+    if is_eqm_like:
+        return model.conditional_sample(
+            cond=cond,
+            horizon=horizon,
+            verbose=verbose,
+            return_diffusion=return_diffusion,
+            scaffold_cfg=scaffold_cfg,
+            eqm_eta_start=eqm_eta_start,
+            eqm_eta_end=eqm_eta_end,
+        )
+
+    total_steps = int(model.n_timesteps)
+    if diffusion_steps_override is not None:
+        total_steps = int(diffusion_steps_override)
+        if total_steps <= 0:
+            raise ValueError(f"diffusion_steps_override must be > 0, got {total_steps}")
+        if total_steps > int(model.n_timesteps):
+            raise ValueError(
+                f"diffusion_steps_override={total_steps} exceeds model.n_timesteps={int(model.n_timesteps)}"
+            )
+
+    scaffold = _prepare_scaffold_settings(
+        scaffold_cfg=scaffold_cfg,
+        total_steps=total_steps,
+        horizon=horizon,
+    )
+
+    device = model.betas.device
+    batch_size = len(cond[0])
+    shape = (batch_size, int(horizon), int(model.transition_dim))
+
+    x = torch.randn(shape, device=device)
+    x = apply_conditioning(x, cond, int(model.action_dim))
+
+    diffusion = [x] if return_diffusion else None
+    anchors_xy = None
+
+    for step_idx, t_raw in enumerate(reversed(range(total_steps))):
+        timesteps = torch.full((batch_size,), int(t_raw), device=device, dtype=torch.long)
+        x = model.p_sample(x, cond, timesteps)
+        x = apply_conditioning(x, cond, int(model.action_dim))
+
+        if scaffold is not None and step_idx == int(scaffold["insert_step"]):
+            anchors_xy = extract_anchor_xy(x, int(model.action_dim), scaffold["anchor_times"])
+            if bool(scaffold["log_insert"]):
+                print(
+                    f"[scaffold:diffuser] inserted at iter={step_idx} "
+                    f"(t={int(t_raw)}) times={scaffold['anchor_times']}",
+                    flush=True,
+                )
+        if anchors_xy is not None:
+            apply_pos_only_anchors_(x, int(model.action_dim), anchors_xy)
+
+        if diffusion is not None:
+            diffusion.append(x)
+
+    if diffusion is not None:
+        return x, torch.stack(diffusion, dim=1)
+    return x
+
+
+@torch.no_grad()
 def sample_imagined_trajectory(
     model: GaussianDiffusion,
     dataset: GoalDataset,
@@ -1447,6 +1877,10 @@ def sample_imagined_trajectory(
     n_samples: int,
     waypoint_xy: np.ndarray | None = None,
     waypoint_t: int | None = None,
+    scaffold_cfg: Mapping[str, Any] | None = None,
+    diffusion_steps_override: int | None = None,
+    eqm_eta_start: float | None = None,
+    eqm_eta_end: float | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     start_obs = np.asarray([start_xy[0], start_xy[1], 0.0, 0.0], dtype=np.float32)
     goal_obs = np.asarray([goal_xy[0], goal_xy[1], 0.0, 0.0], dtype=np.float32)
@@ -1463,7 +1897,17 @@ def sample_imagined_trajectory(
         cond[int(waypoint_t)] = normalize_condition(dataset, waypoint_obs, device).repeat(n_samples, 1)
 
     model.eval()
-    samples = model.conditional_sample(cond, horizon=horizon, verbose=False)
+    samples = _conditional_sample_with_scaffold(
+        model=model,
+        cond=cond,
+        horizon=horizon,
+        scaffold_cfg=scaffold_cfg,
+        diffusion_steps_override=diffusion_steps_override,
+        eqm_eta_start=eqm_eta_start,
+        eqm_eta_end=eqm_eta_end,
+        verbose=False,
+        return_diffusion=False,
+    )
     if hasattr(samples, "trajectories"):
         samples = samples.trajectories
     elif isinstance(samples, (tuple, list)) and len(samples) > 0 and torch.is_tensor(samples[0]):
@@ -1490,6 +1934,10 @@ def sample_imagined_trajectory_from_obs(
     n_samples: int,
     waypoint_xy: np.ndarray | None = None,
     waypoint_t: int | None = None,
+    scaffold_cfg: Mapping[str, Any] | None = None,
+    diffusion_steps_override: int | None = None,
+    eqm_eta_start: float | None = None,
+    eqm_eta_end: float | None = None,
 ) -> Tuple[np.ndarray, np.ndarray]:
     start_obs = np.asarray(start_obs, dtype=np.float32).reshape(-1)
     if start_obs.shape[0] != dataset.observation_dim:
@@ -1510,7 +1958,17 @@ def sample_imagined_trajectory_from_obs(
         waypoint_obs[:2] = np.asarray(waypoint_xy, dtype=np.float32)
         cond[int(waypoint_t)] = normalize_condition(dataset, waypoint_obs, device).repeat(n_samples, 1)
     model.eval()
-    samples = model.conditional_sample(cond, horizon=horizon, verbose=False)
+    samples = _conditional_sample_with_scaffold(
+        model=model,
+        cond=cond,
+        horizon=horizon,
+        scaffold_cfg=scaffold_cfg,
+        diffusion_steps_override=diffusion_steps_override,
+        eqm_eta_start=eqm_eta_start,
+        eqm_eta_end=eqm_eta_end,
+        verbose=False,
+        return_diffusion=False,
+    )
     if hasattr(samples, "trajectories"):
         samples = samples.trajectories
     elif isinstance(samples, (tuple, list)) and len(samples) > 0 and torch.is_tensor(samples[0]):
@@ -1542,6 +2000,10 @@ def sample_best_plan_from_obs(
     plan_score_mode: str = "none",
     plan_score_prefix_len: int = -1,
     replan_every: int = 8,
+    scaffold_cfg: Mapping[str, Any] | None = None,
+    diffusion_steps_override: int | None = None,
+    eqm_eta_start: float | None = None,
+    eqm_eta_end: float | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, int]:
     # Determine total candidates: max of wall_aware_plan_samples (legacy) and plan_samples (new).
     n_wall = max(1, int(wall_aware_plan_samples)) if bool(wall_aware_planning) else 1
@@ -1558,6 +2020,10 @@ def sample_best_plan_from_obs(
         n_samples=n_candidates,
         waypoint_xy=waypoint_xy,
         waypoint_t=waypoint_t,
+        scaffold_cfg=scaffold_cfg,
+        diffusion_steps_override=diffusion_steps_override,
+        eqm_eta_start=eqm_eta_start,
+        eqm_eta_end=eqm_eta_end,
     )
 
     # Determine prefix length for scoring.
@@ -1590,7 +2056,7 @@ def sample_best_plan_from_obs(
 @torch.no_grad()
 def collect_planner_dataset(
     model: GaussianDiffusion,
-    dataset: GoalDataset,
+    dataset: GoalDataset | PlanningDatasetStub,
     env_name: str,
     replay_observations: np.ndarray,
     replay_timeouts: np.ndarray,
@@ -1613,6 +2079,7 @@ def collect_planner_dataset(
     early_terminate_on_success: bool,
     early_terminate_threshold: float,
     min_accepted_episode_len: int,
+    sampling_cfg: Mapping[str, Any] | None = None,
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, float]]:
     env = gym.make(env_name)
     rng = np.random.default_rng(seed)
@@ -1655,6 +2122,26 @@ def collect_planner_dataset(
         raise ValueError("transition_budget must be >= 0")
     if early_terminate_threshold <= 0.0:
         raise ValueError("early_terminate_threshold must be > 0")
+    scaffold_cfg = (
+        sampling_cfg.get("scaffold_cfg")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
+    diffusion_steps_override = (
+        sampling_cfg.get("diffusion_steps_override")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
+    eqm_eta_start = (
+        sampling_cfg.get("eqm_eta_start")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
+    eqm_eta_end = (
+        sampling_cfg.get("eqm_eta_end")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
 
     # Safety against pathological rejection loops.
     # Allow ~10x attempts relative to the minimum number of required episodes.
@@ -1682,15 +2169,30 @@ def collect_planner_dataset(
                 f"min_len={min_len} transition_budget={transition_budget}"
             )
 
-        start_xy, goal_xy, goal_k, sampled_goal_dist = sample_geometric_start_goal_pair(
-            observations=replay_observations,
-            timeouts=replay_timeouts,
-            rng=rng,
-            geom_p=goal_geom_p,
-            min_k=goal_geom_min_k,
-            max_k=goal_geom_max_k,
-            min_distance=goal_min_distance,
+        has_replay_pairs = (
+            replay_observations is not None
+            and replay_timeouts is not None
+            and np.asarray(replay_observations).ndim == 2
+            and len(replay_observations) > 1
+            and len(replay_timeouts) > 0
         )
+        if has_replay_pairs:
+            start_xy, goal_xy, goal_k, sampled_goal_dist = sample_geometric_start_goal_pair(
+                observations=replay_observations,
+                timeouts=replay_timeouts,
+                rng=rng,
+                geom_p=goal_geom_p,
+                min_k=goal_geom_min_k,
+                max_k=goal_geom_max_k,
+                min_distance=goal_min_distance,
+            )
+        else:
+            start_xy, goal_xy, goal_k, sampled_goal_dist = sample_start_goal_pair_without_replay(
+                env=env,
+                rng=rng,
+                maze_arr=maze_arr,
+                min_distance=goal_min_distance,
+            )
         obs = reset_rollout_start(env, start_xy=start_xy)
         initial_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
         min_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
@@ -1725,6 +2227,10 @@ def collect_planner_dataset(
                     maze_arr=maze_arr,
                     wall_aware_planning=wall_aware_planning,
                     wall_aware_plan_samples=wall_aware_plan_samples,
+                    scaffold_cfg=scaffold_cfg,
+                    diffusion_steps_override=diffusion_steps_override,
+                    eqm_eta_start=eqm_eta_start,
+                    eqm_eta_end=eqm_eta_end,
                 )
                 planned_actions = np.asarray(best_actions, dtype=np.float32)
                 plan_offset = 0
@@ -1990,6 +2496,10 @@ def rollout_to_goal(
     plan_samples: int = 1,
     plan_score_mode: str = "none",
     plan_score_prefix_len: int = -1,
+    scaffold_cfg: Mapping[str, Any] | None = None,
+    diffusion_steps_override: int | None = None,
+    eqm_eta_start: float | None = None,
+    eqm_eta_end: float | None = None,
 ) -> Tuple[np.ndarray, np.ndarray, float, float, int]:
     obs = reset_rollout_start(rollout_env, start_xy=start_xy)
     min_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
@@ -2076,6 +2586,10 @@ def rollout_to_goal(
                     plan_score_mode=str(plan_score_mode),
                     plan_score_prefix_len=int(plan_score_prefix_len),
                     replan_every=replan_stride,
+                    scaffold_cfg=scaffold_cfg,
+                    diffusion_steps_override=diffusion_steps_override,
+                    eqm_eta_start=eqm_eta_start,
+                    eqm_eta_end=eqm_eta_end,
                 )
                 planned_actions = np.asarray(best_actions, dtype=np.float32)
                 plan_offset = 0
@@ -2156,6 +2670,7 @@ def evaluate_goal_progress(
     eval_waypoint_mode: str = "none",
     eval_waypoint_t: int = 0,
     eval_waypoint_eps: float = 0.2,
+    sampling_cfg: Mapping[str, Any] | None = None,
 ) -> Dict[str, float]:
     imagined_successes: List[float] = []
     imagined_goal_errors: List[float] = []
@@ -2191,6 +2706,26 @@ def evaluate_goal_progress(
     waypoint_min_distances: List[float] = []
     waypoint_t_effective = resolve_waypoint_t(int(planning_horizon), int(eval_waypoint_t))
     waypoint_rng = np.random.default_rng(20260219 + int(planning_horizon) + len(query_pairs))
+    scaffold_cfg = (
+        sampling_cfg.get("scaffold_cfg")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
+    diffusion_steps_override = (
+        sampling_cfg.get("diffusion_steps_override")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
+    eqm_eta_start = (
+        sampling_cfg.get("eqm_eta_start")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
+    eqm_eta_end = (
+        sampling_cfg.get("eqm_eta_end")
+        if sampling_cfg is not None and isinstance(sampling_cfg, Mapping)
+        else None
+    )
 
     rollout_env = gym.make(env_name)
     dt = float(getattr(rollout_env.unwrapped, "dt", 1.0))
@@ -2215,6 +2750,10 @@ def evaluate_goal_progress(
             n_samples=n_samples,
             waypoint_xy=waypoint_xy,
             waypoint_t=waypoint_t,
+            scaffold_cfg=scaffold_cfg,
+            diffusion_steps_override=diffusion_steps_override,
+            eqm_eta_start=eqm_eta_start,
+            eqm_eta_end=eqm_eta_end,
         )
 
         for sid in range(observations.shape[0]):
@@ -2263,6 +2802,10 @@ def evaluate_goal_progress(
                 open_loop_actions=act_traj if rollout_mode == "open_loop" else None,
                 waypoint_xy=waypoint_xy,
                 waypoint_t=waypoint_t,
+                scaffold_cfg=scaffold_cfg,
+                diffusion_steps_override=diffusion_steps_override,
+                eqm_eta_start=eqm_eta_start,
+                eqm_eta_end=eqm_eta_end,
             )
             if waypoint_xy is not None:
                 waypoint_d = np.linalg.norm(
@@ -2315,6 +2858,23 @@ def evaluate_goal_progress(
         "eval_waypoint_mode": str(eval_waypoint_mode),
         "eval_waypoint_t": int(waypoint_t_effective),
         "eval_waypoint_eps": float(eval_waypoint_eps),
+        "eval_scaffold_enabled": float(bool(scaffold_cfg and scaffold_cfg.get("enabled", False))),
+        "eval_scaffold_stride": float(int(scaffold_cfg.get("stride", 0))) if scaffold_cfg else float("nan"),
+        "eval_scaffold_insert_step": (
+            float(int(scaffold_cfg.get("insert_step")))
+            if scaffold_cfg and scaffold_cfg.get("insert_step", None) is not None
+            else float("nan")
+        ),
+        "eval_scaffold_insert_frac": (
+            float(scaffold_cfg.get("insert_frac", float("nan"))) if scaffold_cfg else float("nan")
+        ),
+        "eval_diffusion_steps_override": (
+            float(int(diffusion_steps_override))
+            if diffusion_steps_override is not None
+            else float("nan")
+        ),
+        "eval_eqm_eta_start": float(eqm_eta_start) if eqm_eta_start is not None else float("nan"),
+        "eval_eqm_eta_end": float(eqm_eta_end) if eqm_eta_end is not None else float("nan"),
         "waypoint_hit_rate": float(np.mean(waypoint_hits)) if waypoint_hits else float("nan"),
         "waypoint_min_distance_mean": float(np.mean(waypoint_min_distances)) if waypoint_min_distances else float("nan"),
         "imagined_goal_success_rate": float(np.mean(imagined_successes)) if imagined_successes else float("nan"),
@@ -2495,6 +3055,11 @@ def plot_query_trajectories(
 
 def main() -> None:
     cfg = parse_args()
+    validate_eqnet_alignment_policy(
+        cfg=cfg,
+        script_name=Path(__file__).name,
+        profile=str(cfg.alignment_profile),
+    )
     set_seed(cfg.seed)
     replay_import_path = str(cfg.replay_import_path or cfg.replay_load_npz).strip()
     replay_export_path = str(cfg.replay_export_path or cfg.replay_save_npz).strip()
@@ -2540,6 +3105,8 @@ def main() -> None:
         raise ValueError("--eval_rollout_horizon must be > 0")
     if cfg.online_collect_transition_budget_per_round < 0:
         raise ValueError("--online_collect_transition_budget_per_round must be >= 0")
+    if cfg.n_episodes < 0:
+        raise ValueError("--n_episodes must be >= 0")
     if cfg.online_early_terminate_threshold <= 0.0:
         raise ValueError("--online_early_terminate_threshold must be > 0")
     if cfg.online_min_accepted_episode_len < 0:
@@ -2550,6 +3117,17 @@ def main() -> None:
         raise ValueError("--eval_waypoint_eps must be > 0")
     if cfg.eval_waypoint_mode not in {"none", "feasible", "infeasible"}:
         raise ValueError("--eval_waypoint_mode must be one of: none, feasible, infeasible")
+    if cfg.scaffold_stride <= 0:
+        raise ValueError("--scaffold_stride must be > 0")
+    if not (0.0 < float(cfg.scaffold_insert_frac) <= 1.0):
+        raise ValueError("--scaffold_insert_frac must be in (0, 1]")
+    if int(cfg.eval_diffusion_steps_override) < 0:
+        raise ValueError("--eval_diffusion_steps_override must be >= 0")
+    if cfg.eval_eqm_eta_start is not None and float(cfg.eval_eqm_eta_start) <= 0.0:
+        raise ValueError("--eval_eqm_eta_start must be > 0 when set")
+    if cfg.eval_eqm_eta_end is not None and float(cfg.eval_eqm_eta_end) <= 0.0:
+        raise ValueError("--eval_eqm_eta_end must be > 0 when set")
+    sampling_cfg = build_sampling_cfg_from_config(cfg)
 
     online_min_accepted_episode_len = int(cfg.online_min_accepted_episode_len) if int(cfg.online_min_accepted_episode_len) > 0 else int(cfg.horizon)
     if online_min_accepted_episode_len <= 0:
@@ -2587,6 +3165,12 @@ def main() -> None:
         raise FileNotFoundError(
             f"Replay import file not found: {replay_import_path} "
             f"(from --replay_import_path/--replay_load_npz)"
+        )
+    if not replay_import_path and cfg.n_episodes == 0 and not (cfg.online_self_improve and cfg.online_rounds > 0):
+        raise ValueError(
+            "No data source configured. Set one of: "
+            "--n_episodes > 0, --replay_import_path, or "
+            "--online_self_improve with --online_rounds > 0."
         )
     if cfg.collector_ckpt_path and not Path(cfg.collector_ckpt_path).is_file():
         raise FileNotFoundError(f"--collector_ckpt_path not found: {cfg.collector_ckpt_path}")
@@ -2630,6 +3214,18 @@ def main() -> None:
         f"eval_waypoint_t={cfg.eval_waypoint_t} "
         f"eval_waypoint_eps={cfg.eval_waypoint_eps:.3f}"
     )
+    print(
+        "[setup] "
+        f"scaffold={cfg.scaffold} "
+        f"stride={cfg.scaffold_stride} "
+        f"insert_frac={cfg.scaffold_insert_frac:.3f} "
+        f"insert_step={cfg.scaffold_insert_step} "
+        f"exclude_endpoints={int(bool(cfg.scaffold_exclude_endpoints))} "
+        f"log_insert={int(bool(cfg.scaffold_log_insert))} "
+        f"diff_steps_override={cfg.eval_diffusion_steps_override} "
+        f"eqm_eta_start={cfg.eval_eqm_eta_start} "
+        f"eqm_eta_end={cfg.eval_eqm_eta_end}"
+    )
     maze_arr = load_maze_arr_from_env(cfg.env)
     if maze_arr is None:
         print("[setup] maze geometry unavailable from environment; wall-aware planning disabled.")
@@ -2639,7 +3235,15 @@ def main() -> None:
             f"wall_cells={int(np.sum(maze_arr == 10))}"
         )
 
+    probe_env = gym.make(cfg.env)
+    obs_dim = int(np.prod(probe_env.observation_space.shape))
+    action_dim = int(np.prod(probe_env.action_space.shape))
+    env_action_low = np.asarray(probe_env.action_space.low, dtype=np.float32)
+    env_action_high = np.asarray(probe_env.action_space.high, dtype=np.float32)
+    probe_env.close()
+
     replay_import_meta: Dict[str, Any] = {}
+    bootstrap_from_current_policy = False
     if replay_import_path:
         raw_dataset, action_low, action_high, collection_stats, replay_import_meta = load_replay_artifact(
             Path(replay_import_path)
@@ -2651,7 +3255,7 @@ def main() -> None:
             f"episodes={int(replay_import_meta.get('episodes', count_episodes_from_timeouts(raw_dataset['timeouts'])))} "
             f"fingerprint={replay_import_meta.get('fingerprint', 'na')}"
         )
-    else:
+    elif int(cfg.n_episodes) > 0:
         raw_dataset, action_low, action_high, collection_stats = collect_random_dataset(
             env_name=cfg.env,
             n_episodes=cfg.n_episodes,
@@ -2661,19 +3265,20 @@ def main() -> None:
             corridor_aware_data=cfg.corridor_aware_data,
             corridor_max_resamples=cfg.corridor_max_resamples,
         )
-    print(
-        f"[data] transitions={len(raw_dataset['observations'])} "
-        f"episodes={count_episodes_from_timeouts(raw_dataset['timeouts'])}"
-    )
-    print(f"[data] action_low={action_low} action_high={action_high}")
-    print(
-        "[data] collection_stats "
-        f"episode_len_mean={collection_stats['episode_len_mean']:.2f} "
-        f"episode_len_min={collection_stats['episode_len_min']} "
-        f"episode_len_max={collection_stats['episode_len_max']} "
-        f"wall_rejects={collection_stats['wall_rejects']} "
-        f"failed_steps={collection_stats['failed_steps']}"
-    )
+    else:
+        raw_dataset = make_empty_replay_dataset(observation_dim=obs_dim, action_dim=action_dim)
+        action_low = env_action_low.astype(np.float32)
+        action_high = env_action_high.astype(np.float32)
+        collection_stats = {
+            "episode_len_mean": 0.0,
+            "episode_len_min": 0,
+            "episode_len_max": 0,
+            "wall_rejects": 0,
+            "failed_steps": 0,
+        }
+        bootstrap_from_current_policy = True
+        print("[data] random-policy bootstrap disabled (--n_episodes=0).")
+        print("[data] bootstrap mode: collect initial replay from current policy before training.")
 
     if replay_import_path:
         # With use_padding=False, GoalDataset needs at least one episode with length > horizon,
@@ -2686,21 +3291,11 @@ def main() -> None:
                 "Set --horizon < episode_len_max (or load a replay with longer episodes)."
             )
 
-    dataset, train_loader, val_loader, train_idx, val_idx = build_goal_dataset_splits(
-        raw_dataset=raw_dataset,
-        cfg=cfg,
-        split_seed=cfg.seed + 1337,
-        device=device,
-    )
-    initial_train_samples = int(len(train_idx))
-    initial_val_samples = int(len(val_idx))
-    print(f"[data] samples total={len(dataset)} train={initial_train_samples} val={initial_val_samples}")
-
     dim_mults = parse_dim_mults(cfg.model_dim_mults)
     model = TemporalUnet(
         horizon=cfg.horizon,
-        transition_dim=dataset.observation_dim + dataset.action_dim,
-        cond_dim=dataset.observation_dim,
+        transition_dim=obs_dim + action_dim,
+        cond_dim=obs_dim,
         dim=cfg.model_dim,
         dim_mults=dim_mults,
     ).to(device)
@@ -2709,8 +3304,8 @@ def main() -> None:
         diffusion = GaussianDiffusion(
             model=model,
             horizon=cfg.horizon,
-            observation_dim=dataset.observation_dim,
-            action_dim=dataset.action_dim,
+            observation_dim=obs_dim,
+            action_dim=action_dim,
             n_timesteps=cfg.n_diffusion_steps,
             clip_denoised=cfg.clip_denoised,
             predict_epsilon=cfg.predict_epsilon,
@@ -2722,8 +3317,8 @@ def main() -> None:
         diffusion = EquilibriumMatchingDiffusion(
             model=model,
             horizon=cfg.horizon,
-            observation_dim=dataset.observation_dim,
-            action_dim=dataset.action_dim,
+            observation_dim=obs_dim,
+            action_dim=action_dim,
             n_eqm_steps=cfg.eqm_steps,
             step_size=cfg.eqm_step_size,
             c_scale=cfg.eqm_c_scale,
@@ -2768,6 +3363,80 @@ def main() -> None:
         if collector_ckpt_model is not None:
             return collector_ckpt_model
         return ema_model if cfg.collector_weights == "ema" else diffusion
+
+    if bootstrap_from_current_policy:
+        bootstrap_transition_budget = int(cfg.online_collect_transition_budget_per_round)
+        if bootstrap_transition_budget <= 0:
+            bootstrap_transition_budget = int(cfg.online_collect_episodes_per_round) * int(cfg.online_collect_episode_len)
+        if bootstrap_transition_budget <= 0:
+            raise ValueError(
+                "bootstrap_transition_budget must be > 0 when --n_episodes=0. "
+                "Set --online_collect_transition_budget_per_round > 0."
+            )
+
+        bootstrap_dataset_stub = PlanningDatasetStub(observation_dim=obs_dim, action_dim=action_dim)
+        bootstrap_replay, bootstrap_stats = collect_planner_dataset(
+            model=model_for_collection(),
+            dataset=bootstrap_dataset_stub,
+            env_name=cfg.env,
+            replay_observations=raw_dataset["observations"],
+            replay_timeouts=raw_dataset["timeouts"],
+            horizon=cfg.horizon,
+            device=device,
+            n_episodes=cfg.online_collect_episodes_per_round,
+            episode_len=cfg.online_collect_episode_len,
+            transition_budget=bootstrap_transition_budget,
+            replan_every_n_steps=cfg.online_replan_every_n_steps,
+            goal_geom_p=cfg.online_goal_geom_p,
+            goal_geom_min_k=cfg.online_goal_geom_min_k,
+            goal_geom_max_k=cfg.online_goal_geom_max_k,
+            goal_min_distance=cfg.online_goal_min_distance,
+            seed=cfg.seed + 9991,
+            maze_arr=maze_arr,
+            wall_aware_planning=cfg.wall_aware_planning,
+            wall_aware_plan_samples=cfg.wall_aware_plan_samples,
+            planning_success_thresholds=online_planning_success_thresholds,
+            planning_success_rel_reduction=cfg.online_planning_success_rel_reduction,
+            early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
+            early_terminate_threshold=float(cfg.online_early_terminate_threshold),
+            min_accepted_episode_len=int(online_min_accepted_episode_len),
+            sampling_cfg=sampling_cfg,
+        )
+        raw_dataset = merge_replay_datasets(raw_dataset, bootstrap_replay)
+        collection_stats = bootstrap_stats
+        print(
+            "[bootstrap] current-policy replay ready "
+            f"transitions={int(len(raw_dataset['observations']))} "
+            f"episodes={int(count_episodes_from_timeouts(raw_dataset['timeouts']))} "
+            f"transition_budget={bootstrap_transition_budget}"
+        )
+
+    print(
+        f"[data] transitions={len(raw_dataset['observations'])} "
+        f"episodes={count_episodes_from_timeouts(raw_dataset['timeouts'])}"
+    )
+    collection_stats = dict(collection_stats)
+    collection_stats.setdefault("wall_rejects", 0)
+    collection_stats.setdefault("failed_steps", 0)
+    print(f"[data] action_low={action_low} action_high={action_high}")
+    print(
+        "[data] collection_stats "
+        f"episode_len_mean={collection_stats['episode_len_mean']:.2f} "
+        f"episode_len_min={collection_stats['episode_len_min']} "
+        f"episode_len_max={collection_stats['episode_len_max']} "
+        f"wall_rejects={collection_stats['wall_rejects']} "
+        f"failed_steps={collection_stats['failed_steps']}"
+    )
+
+    dataset, train_loader, val_loader, train_idx, val_idx = build_goal_dataset_splits(
+        raw_dataset=raw_dataset,
+        cfg=cfg,
+        split_seed=cfg.seed + 1337,
+        device=device,
+    )
+    initial_train_samples = int(len(train_idx))
+    initial_val_samples = int(len(val_idx))
+    print(f"[data] samples total={len(dataset)} train={initial_train_samples} val={initial_val_samples}")
 
     def replay_metadata(stage: str, round_idx: int | None = None) -> Dict[str, Any]:
         meta: Dict[str, Any] = {
@@ -2919,6 +3588,7 @@ def main() -> None:
                     eval_waypoint_mode=cfg.eval_waypoint_mode,
                     eval_waypoint_t=cfg.eval_waypoint_t,
                     eval_waypoint_eps=cfg.eval_waypoint_eps,
+                    sampling_cfg=sampling_cfg,
                 )
                 progress["step"] = int(global_step)
                 progress["phase"] = phase
@@ -3013,6 +3683,7 @@ def main() -> None:
                     early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
                     early_terminate_threshold=float(cfg.online_early_terminate_threshold),
                     min_accepted_episode_len=int(online_min_accepted_episode_len),
+                    sampling_cfg=sampling_cfg,
                 )
                 did_collect = True
                 raw_dataset = merge_replay_datasets(raw_dataset, planner_dataset)
@@ -3196,6 +3867,10 @@ def main() -> None:
             n_samples=cfg.query_batch_size,
             waypoint_xy=query_waypoint_xy,
             waypoint_t=query_waypoint_t_use,
+            scaffold_cfg=sampling_cfg.get("scaffold_cfg"),
+            diffusion_steps_override=sampling_cfg.get("diffusion_steps_override"),
+            eqm_eta_start=sampling_cfg.get("eqm_eta_start"),
+            eqm_eta_end=sampling_cfg.get("eqm_eta_end"),
         )
 
         for sid in range(observations.shape[0]):
@@ -3220,6 +3895,10 @@ def main() -> None:
                 open_loop_actions=actions[sid] if cfg.eval_rollout_mode == "open_loop" else None,
                 waypoint_xy=query_waypoint_xy,
                 waypoint_t=query_waypoint_t_use,
+                scaffold_cfg=sampling_cfg.get("scaffold_cfg"),
+                diffusion_steps_override=sampling_cfg.get("diffusion_steps_override"),
+                eqm_eta_start=sampling_cfg.get("eqm_eta_start"),
+                eqm_eta_end=sampling_cfg.get("eqm_eta_end"),
             )
             waypoint_min_dist = float("nan")
             waypoint_hit = float("nan")

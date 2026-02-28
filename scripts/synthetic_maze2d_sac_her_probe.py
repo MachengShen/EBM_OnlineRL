@@ -38,11 +38,12 @@ class Config:
     seed: int = 0
     device: str = "cuda:0"
     logdir: str = ""
+    alignment_profile: str = dprobe.ALIGNMENT_PROFILE_EQNET_SELF_IMPROVE_V1
     replay_import_path: str = ""
     replay_export_path: str = ""
 
     # Offline synthetic replay collection (random actions).
-    n_episodes: int = 400
+    n_episodes: int = 0
     episode_len: int = 192
     action_scale: float = 1.0
     corridor_aware_data: bool = False
@@ -60,7 +61,7 @@ class Config:
     learning_rate: float = 3e-4
     batch_size: int = 256  # HER samples per update.
     grad_clip: float = 0.0
-    train_steps: int = 4000
+    train_steps: int = 0
     gamma: float = 0.99
     tau: float = 0.005
     policy_update_every: int = 1
@@ -83,14 +84,14 @@ class Config:
     # Evaluation protocol (shared).
     query: str = "0.9,2.9:2.9,2.9;0.9,2.9:2.9,0.9;2.9,0.9:0.9,2.9"
     query_mode: str = "diverse"
-    num_eval_queries: int = 24
+    num_eval_queries: int = 8
     query_bank_size: int = 256
     query_angle_bins: int = 16
     query_min_distance: float = 1.0
     query_resample_each_eval: bool = True
     query_resample_seed_stride: int = 7919
-    query_batch_size: int = 6
-    eval_goal_every: int = 5000
+    query_batch_size: int = 2
+    eval_goal_every: int = 1000
     goal_success_threshold: float = 0.5
     eval_rollout_mode: str = "receding_horizon"
     eval_rollout_replan_every_n_steps: int = 8
@@ -99,19 +100,19 @@ class Config:
     save_checkpoint_every: int = 5000
 
     # Online self-improvement loop (collector is SAC policy + HER training).
-    online_self_improve: bool = False
+    online_self_improve: bool = True
     disable_online_collection: bool = False
-    online_rounds: int = 0
+    online_rounds: int = 8
     online_train_steps_per_round: int = 2000
     online_collect_episodes_per_round: int = 32
     online_collect_episode_len: int = 256
-    online_collect_transition_budget_per_round: int = 0
+    online_collect_transition_budget_per_round: int = 3000
     online_replan_every_n_steps: int = 8
     online_planning_success_thresholds: str = "0.1,0.2"
     online_planning_success_rel_reduction: float = 0.9
     online_early_terminate_on_success: bool = True
     online_early_terminate_threshold: float = 0.2
-    online_min_accepted_episode_len: int = 0
+    online_min_accepted_episode_len: int = 8
 
 
 def _parse_int_list(raw: str, name: str) -> Tuple[int, ...]:
@@ -136,6 +137,17 @@ def parse_args() -> Config:
     p.add_argument("--seed", type=int, default=Config.seed)
     p.add_argument("--device", type=str, default=Config.device)
     p.add_argument("--logdir", type=str, default=Config.logdir)
+    p.add_argument(
+        "--alignment_profile",
+        type=str,
+        default=Config.alignment_profile,
+        choices=list(dprobe.ALIGNMENT_PROFILE_CHOICES),
+        help=(
+            "Configuration policy: "
+            "eqnet_self_improve_v1 enforces self-improvement defaults; "
+            "legacy_offline explicitly opts out."
+        ),
+    )
     p.add_argument("--replay_import_path", type=str, default=Config.replay_import_path)
     p.add_argument("--replay_export_path", type=str, default=Config.replay_export_path)
 
@@ -959,15 +971,30 @@ def collect_policy_dataset(
                 f"min_len={min_len} transition_budget={transition_budget}"
             )
 
-        start_xy, goal_xy, goal_k, sampled_goal_dist = dprobe.sample_geometric_start_goal_pair(
-            observations=replay_observations,
-            timeouts=replay_timeouts,
-            rng=rng,
-            geom_p=float(goal_geom_p),
-            min_k=int(goal_geom_min_k),
-            max_k=int(goal_geom_max_k),
-            min_distance=float(goal_min_distance),
+        has_replay_pairs = (
+            replay_observations is not None
+            and replay_timeouts is not None
+            and np.asarray(replay_observations).ndim == 2
+            and len(replay_observations) > 1
+            and len(replay_timeouts) > 0
         )
+        if has_replay_pairs:
+            start_xy, goal_xy, goal_k, sampled_goal_dist = dprobe.sample_geometric_start_goal_pair(
+                observations=replay_observations,
+                timeouts=replay_timeouts,
+                rng=rng,
+                geom_p=float(goal_geom_p),
+                min_k=int(goal_geom_min_k),
+                max_k=int(goal_geom_max_k),
+                min_distance=float(goal_min_distance),
+            )
+        else:
+            start_xy, goal_xy, goal_k, sampled_goal_dist = dprobe.sample_start_goal_pair_without_replay(
+                env=env,
+                rng=rng,
+                maze_arr=maze_arr,
+                min_distance=float(goal_min_distance),
+            )
         obs = dprobe.reset_rollout_start(env, start_xy=start_xy)
         initial_goal_dist = float(np.linalg.norm(obs[:2] - goal_xy))
         min_goal_dist = initial_goal_dist
@@ -1092,6 +1119,11 @@ def collect_policy_dataset(
 
 def main() -> None:
     cfg = parse_args()
+    dprobe.validate_eqnet_alignment_policy(
+        cfg=cfg,
+        script_name=Path(__file__).name,
+        profile=str(cfg.alignment_profile),
+    )
     dprobe.set_seed(cfg.seed)
     if cfg.online_replan_every_n_steps <= 0:
         raise ValueError("--online_replan_every_n_steps must be > 0")
@@ -1113,8 +1145,17 @@ def main() -> None:
         raise ValueError("--her_future_sample_attempts must be > 0 when HER is enabled")
     if cfg.reward_mode not in {"sparse", "shaped"}:
         raise ValueError("--reward_mode must be sparse|shaped")
+    if cfg.n_episodes < 0:
+        raise ValueError("--n_episodes must be >= 0")
+    if cfg.online_collect_transition_budget_per_round < 0:
+        raise ValueError("--online_collect_transition_budget_per_round must be >= 0")
     if cfg.replay_import_path and not Path(cfg.replay_import_path).is_file():
         raise FileNotFoundError(f"--replay_import_path not found: {cfg.replay_import_path}")
+    if not cfg.replay_import_path and int(cfg.n_episodes) == 0 and not (cfg.online_self_improve and cfg.online_rounds > 0):
+        raise ValueError(
+            "No data source configured. Set one of: --replay_import_path, --n_episodes > 0, "
+            "or --online_self_improve with --online_rounds > 0."
+        )
 
     logdir = dprobe.make_logdir(cfg)
     with open(logdir / "config.json", "w", encoding="utf-8") as f:
@@ -1130,6 +1171,7 @@ def main() -> None:
     maze_arr = dprobe.load_maze_arr_from_env(cfg.env)
 
     replay_import_meta: Dict[str, Any] = {}
+    bootstrap_from_current_policy = False
     # Collect offline replay with random actions (same as diffuser/gcbc scripts),
     # or import an existing replay artifact for collector/learner swap runs.
     if cfg.replay_import_path:
@@ -1143,7 +1185,7 @@ def main() -> None:
             f"episodes={int(replay_import_meta.get('episodes', dprobe.count_episodes_from_timeouts(raw_dataset['timeouts'])))} "
             f"fingerprint={replay_import_meta.get('fingerprint', 'na')}"
         )
-    else:
+    elif int(cfg.n_episodes) > 0:
         raw_dataset, _action_low_scaled, _action_high_scaled, collection_stats = dprobe.collect_random_dataset(
             env_name=cfg.env,
             n_episodes=cfg.n_episodes,
@@ -1153,6 +1195,24 @@ def main() -> None:
             corridor_aware_data=cfg.corridor_aware_data,
             corridor_max_resamples=cfg.corridor_max_resamples,
         )
+    else:
+        # Self-improvement-first bootstrap: initialize replay by collecting with current policy.
+        # Start from empty replay to avoid random-policy offline initialization.
+        tmp_env = gym.make(cfg.env)
+        obs_dim = int(np.prod(tmp_env.observation_space.shape))
+        act_dim = int(np.prod(tmp_env.action_space.shape))
+        tmp_env.close()
+        raw_dataset = dprobe.make_empty_replay_dataset(observation_dim=obs_dim, action_dim=act_dim)
+        collection_stats = {
+            "episode_len_mean": 0.0,
+            "episode_len_min": 0,
+            "episode_len_max": 0,
+            "wall_rejects": 0,
+            "failed_steps": 0,
+        }
+        bootstrap_from_current_policy = True
+        print("[data] random-policy bootstrap disabled (--n_episodes=0).")
+        print("[data] bootstrap mode: collect initial replay from current policy before training.")
 
     # Get true env action bounds for SAC scaling.
     tmp_env = gym.make(cfg.env)
@@ -1188,6 +1248,55 @@ def main() -> None:
         grad_clip=cfg.grad_clip,
     )
 
+    if bootstrap_from_current_policy:
+        bootstrap_transition_budget = int(cfg.online_collect_transition_budget_per_round)
+        bootstrap_min_accepted_episode_len = max(
+            1,
+            min(
+                int(cfg.online_min_accepted_episode_len) if int(cfg.online_min_accepted_episode_len) > 0 else int(cfg.horizon),
+                8,
+            ),
+        )
+        if bootstrap_transition_budget <= 0:
+            bootstrap_transition_budget = int(cfg.online_collect_episodes_per_round) * int(cfg.online_collect_episode_len)
+        if bootstrap_transition_budget <= 0:
+            raise ValueError(
+                "bootstrap_transition_budget must be > 0 when --n_episodes=0. "
+                "Set --online_collect_transition_budget_per_round > 0."
+            )
+
+        bootstrap_replay, bootstrap_stats = collect_policy_dataset(
+            agent=agent,
+            env_name=cfg.env,
+            replay_observations=raw_dataset["observations"],
+            replay_timeouts=raw_dataset["timeouts"],
+            n_episodes=int(cfg.online_collect_episodes_per_round),
+            episode_len=int(cfg.online_collect_episode_len),
+            transition_budget=int(bootstrap_transition_budget),
+            decision_every_n_steps=int(cfg.online_replan_every_n_steps),
+            goal_geom_p=float(cfg.online_goal_geom_p),
+            goal_geom_min_k=int(cfg.online_goal_geom_min_k),
+            goal_geom_max_k=int(cfg.online_goal_geom_max_k),
+            goal_min_distance=float(cfg.online_goal_min_distance),
+            seed=int(cfg.seed + 9991),
+            maze_arr=maze_arr,
+            planning_success_thresholds=dprobe.parse_float_list(cfg.online_planning_success_thresholds, "--online_planning_success_thresholds"),
+            planning_success_rel_reduction=float(cfg.online_planning_success_rel_reduction),
+            early_terminate_on_success=bool(cfg.online_early_terminate_on_success),
+            early_terminate_threshold=float(cfg.online_early_terminate_threshold),
+            min_accepted_episode_len=int(bootstrap_min_accepted_episode_len),
+        )
+        raw_dataset = dprobe.merge_replay_datasets(raw_dataset, bootstrap_replay)
+        collection_stats = dict(bootstrap_stats)
+        collection_stats.setdefault("wall_rejects", 0)
+        collection_stats.setdefault("failed_steps", 0)
+        print(
+            "[bootstrap] current-policy replay ready "
+            f"transitions={int(len(raw_dataset['observations']))} "
+            f"episodes={int(dprobe.count_episodes_from_timeouts(raw_dataset['timeouts']))} "
+            f"transition_budget={bootstrap_transition_budget}"
+        )
+
     metrics_rows: List[Dict[str, float]] = []
     progress_rows: List[Dict[str, float]] = []
     online_collection_rows: List[Dict[str, float]] = []
@@ -1198,13 +1307,34 @@ def main() -> None:
         print(f"[eval-query] mode=fixed num_pairs={len(query_bank)}")
     else:
         bank_size = max(cfg.query_bank_size, cfg.num_eval_queries)
-        query_bank = dprobe.build_diverse_query_bank(
-            points_xy=raw_dataset["observations"][:, :2],
-            bank_size=bank_size,
-            n_angle_bins=cfg.query_angle_bins,
-            min_pair_distance=cfg.query_min_distance,
-            seed=cfg.seed + 991,
+        query_bank: List[Tuple[np.ndarray, np.ndarray]] = []
+        has_replay_points = (
+            raw_dataset["observations"].ndim == 2
+            and raw_dataset["observations"].shape[0] >= 2
         )
+        if has_replay_points:
+            try:
+                query_bank = dprobe.build_diverse_query_bank(
+                    points_xy=raw_dataset["observations"][:, :2],
+                    bank_size=bank_size,
+                    n_angle_bins=cfg.query_angle_bins,
+                    min_pair_distance=cfg.query_min_distance,
+                    seed=cfg.seed + 991,
+                )
+            except Exception:
+                query_bank = []
+        if not query_bank:
+            env_q = gym.make(cfg.env)
+            rng_q = np.random.default_rng(cfg.seed + 991)
+            for _ in range(int(bank_size)):
+                s_xy, g_xy, _, _ = dprobe.sample_start_goal_pair_without_replay(
+                    env=env_q,
+                    rng=rng_q,
+                    maze_arr=maze_arr,
+                    min_distance=float(cfg.query_min_distance),
+                )
+                query_bank.append((np.asarray(s_xy, dtype=np.float32), np.asarray(g_xy, dtype=np.float32)))
+            env_q.close()
         print(
             f"[eval-query] mode=diverse bank_size={len(query_bank)} "
             f"num_eval_queries={cfg.num_eval_queries} angle_bins={cfg.query_angle_bins} "

@@ -65,7 +65,7 @@ def _build_query_pairs(probe, cfg, raw_dataset: Dict[str, np.ndarray], query_ste
     if str(getattr(cfg, "query_mode", "diverse")) == "fixed":
         return list(probe.parse_queries(cfg.query))
 
-    bank_size = int(max(getattr(cfg, "query_bank_size", 256), getattr(cfg, "num_eval_queries", 24)))
+    bank_size = int(max(getattr(cfg, "query_bank_size", 256), getattr(cfg, "num_eval_queries", 8)))
     query_bank = probe.build_diverse_query_bank(
         points_xy=raw_dataset["observations"][:, :2],
         bank_size=bank_size,
@@ -81,7 +81,7 @@ def _build_query_pairs(probe, cfg, raw_dataset: Dict[str, np.ndarray], query_ste
 
     return probe.select_query_pairs(
         query_bank=query_bank,
-        num_queries=int(getattr(cfg, "num_eval_queries", 24)),
+        num_queries=int(getattr(cfg, "num_eval_queries", 8)),
         seed=int(q_seed),
     )
 
@@ -255,8 +255,8 @@ def main() -> None:
         "checkpoint": str(ckpt_path),
         "query_step": int(args.query_step),
         "cfg_eval_overrides": {
-            "num_eval_queries": int(getattr(cfg, "num_eval_queries", 24)),
-            "query_batch_size": int(getattr(cfg, "query_batch_size", 6)),
+            "num_eval_queries": int(getattr(cfg, "num_eval_queries", 8)),
+            "query_batch_size": int(getattr(cfg, "query_batch_size", 2)),
             "goal_success_threshold": float(getattr(cfg, "goal_success_threshold", 0.5)),
             "planning_horizon": int(planning_horizon),
             "eval_rollout_horizon": int(args.eval_rollout_horizon),

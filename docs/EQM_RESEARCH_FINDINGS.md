@@ -5,7 +5,7 @@
 **Model:** EqM (Equilibrium Matching) — a time-invariant vector field replacement for standard diffusion-based trajectory planning
 **Checkpoint:** `eqm_k25_s010_budgetmatch` (step 18000, K=25, step_size=0.1, horizon=64)
 **Branch:** `analysis/results-2026-02-24`
-**Last updated:** 2026-02-26
+**Last updated:** 2026-02-27
 
 ---
 
@@ -273,7 +273,159 @@ H1 shows EqM refinement is dynamics-consistent descent. H3 shows waypoint constr
 
 ---
 
-## 6. Open Questions
+## 6. EqM vs Diffuser Comparative Analysis
+
+*Date: 2026-02-26. Both models use the same TemporalUnet backbone, same maze2d-umaze-v1 dataset, same online self-improvement training (4 rounds). Checkpoints: EqM `eqm_k25_s010_budgetmatch/checkpoint_last.pt`, Diffuser `diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/checkpoint_last.pt`.*
+
+### 8.1 Trajectory Smoothness
+
+Scripts: `scripts/smoothness_maze2d_compare.py`, `scripts/viz_maze2d_diffuser_compare.py`. 20 imagined trajectories on matched start/goal pairs.
+
+| Metric | EqM | Diffuser | Ratio (E/D) |
+|---|---|---|---|
+| Mean step displacement | **0.160** | 0.039 | 4.1x |
+| Std step displacement | 0.077 | 0.023 | 3.3x |
+| Max step displacement | 0.510 | 0.121 | 4.2x |
+| Total path length | 39.43 | 9.62 | 4.1x |
+| Straightness (goal dist / path length) | **0.20** | **0.84** | 0.24x |
+| Mean direction change | **118°** | **36°** | 3.3x |
+
+**Conclusion:** EqM imagined trajectories are ~4x jerkier and far less straight than Diffuser. This is a real model property, confirmed numerically, not a visualization artifact. EqM makes large erratic steps with ~118° average turns; Diffuser takes short smooth steps with ~36° average turns.
+
+### 8.2 Locality-vs-Noise Analysis
+
+Script: `scripts/analysis_locality_vs_noise_maze2d.py`. 256 VJP probes per condition × 5 noise levels × 2 models. Artifact: `runs/analysis/locality_vs_noise_20260226-210232/`.
+
+Noise levels: t = 0 (clean), 16, 32, 48, 63 (pure noise). Diffuser uses matching t_embed; EqM always uses t_embed = 0.
+
+**Key finding: both models have half-decay offset = 1 at ALL noise levels.** The influence of a timestep's input on neighboring timesteps drops to ~5% within 1 step for both models, at every noise level.
+
+| Model | Clean (t=0) Inf@1 | Mid (t=32) Inf@1 | Noise (t=63) Inf@1 |
+|---|---|---|---|
+| Diffuser | 0.068 | 0.022 | 0.005 |
+| EqM | 0.046 | 0.036 | 0.020 |
+
+Diffuser becomes more local at high noise; EqM retains more non-local influence at high noise, but both are highly local throughout. **The EqM smoothness deficit does NOT arise from denoiser non-locality — the architectures are equally local. The difference emerges from the iterative sampling dynamics (64 DDPM steps vs 25 EqM gradient descent steps).**
+
+### 8.3 Sub-block Locality: Position vs Velocity Decomposition
+
+Script: `scripts/analysis_subblock_locality_compare.py`. 256 VJP probes, clean data (t=0), raw (unnormalized) grad norms. Artifact: `runs/analysis/subblock_locality_compare_20260226-214034/`.
+
+Transition packing: `[ax, ay | x, y, vx, vy]` — act = dims 0:2, pos = dims 2:4, vel = dims 4:6.
+
+#### Velocity → Action (`act_out ← vel_in`) — *user-requested*
+
+| Model | Off0 | Off1 | Off2 | Off3 | Off4 | Off1/Off0 |
+|---|---|---|---|---|---|---|
+| Diffuser | 1.120 | 0.569 | 0.564 | 0.537 | 0.446 | **51%** |
+| EqM | 0.032 | 0.029 | 0.022 | 0.018 | 0.020 | **89%** |
+
+EqM's velocity → action coupling is **nearly flat across all offsets** (89% persists at offset 1). Actions at timestep t depend equally on velocity at all other timesteps. Diffuser has moderate locality (51%). This is the strongest structural difference found between the two models.
+
+#### Position → Velocity (`vel_out ← pos_in`) — *user-requested*
+
+| Model | Off0 | Off1 | Off2 | Off3 | Off4 | Off1/Off0 |
+|---|---|---|---|---|---|---|
+| Diffuser | 1.162 | 0.392 | 0.333 | 0.329 | 0.251 | **34%** |
+| EqM | 0.025 | 0.008 | 0.007 | 0.008 | 0.008 | **32%** |
+
+Both models show nearly identical locality structure for this sub-block (~32–34% at offset 1, then roughly flat). Diffuser has ~46x larger raw magnitude. This cross-block coupling is substantially more non-local than the diagonal blocks.
+
+#### Position → Position (`pos_out ← pos_in`) — *user-requested*
+
+| Model | Off0 | Off1 | Off2 | Off3 | Off4 | Off1/Off0 |
+|---|---|---|---|---|---|---|
+| Diffuser | 25.025 | 0.952 | 1.142 | 0.897 | 0.798 | **3.8%** |
+| EqM | 0.903 | 0.023 | 0.017 | 0.015 | 0.020 | **2.5%** |
+
+Both models are **extremely local** for pos→pos: the self-timestep dominates 96–97% of influence. Diffuser has 27x larger raw magnitude overall (consistent with the H2 blockwise result).
+
+#### Additional sub-blocks (full table, t=0)
+
+| Sub-block pair | Diffuser Off0 | EqM Off0 | D/E ratio | Diffuser 1/0 | EqM 1/0 |
+|---|---|---|---|---|---|
+| pos → pos | 25.025 | 0.903 | 27.7x | 3.8% | 2.5% |
+| vel → vel | 23.114 | 0.863 | 26.8x | 6.8% | 3.8% |
+| pos → vel | 1.162 | 0.025 | 46.3x | 33.8% | 31.8% |
+| vel → pos | 0.907 | 0.027 | 33.3x | 34.6% | 20.3% |
+| vel → act | 1.120 | 0.032 | 34.8x | **50.8%** | **89.1%** |
+| pos → act | 1.220 | 0.012 | 100.8x | 27.6% | 88.8% |
+
+### 8.4 Interpretation
+
+1. **Magnitude asymmetry (27–100x)**: EqM produces substantially weaker raw gradients than Diffuser across all sub-blocks at clean data. This is consistent with EqM operating near an equilibrium fixed point where the vector field is small by construction, while DDPM operates at a larger signal regime.
+
+2. **vel→act non-locality is the key EqM anomaly**: EqM's vel→act 1/0 ratio is 89% vs Diffuser's 51%. EqM actions do not depend primarily on contemporaneous velocity; they draw on velocity context from across the entire trajectory. This likely drives the jerky action sequences: without a strong local vel→act prior, each step's action is influenced by inconsistent global context.
+
+3. **Diagonal blocks (pos→pos, vel→vel) are highly local for both models** (2–7% at offset 1), confirming the H2 locality finding extends to the finer sub-block level.
+
+4. **Cross-block off-diagonal channels (pos↔vel) are moderately non-local** (~32–35% at offset 1) for both models, suggesting both learn some temporal coupling between position and velocity across timesteps.
+
+5. **EqM pos→act is also anomalously non-local** (88.8% at offset 1, similar to vel→act). Both action-output sub-blocks in EqM are globally distributed, while in Diffuser the pos→act channel is more local (27.6%). This suggests EqM's action predictions are fundamentally dependent on the entire trajectory's state context rather than the local state.
+
+### 8.5 Boundary Influence Spikes
+
+Both trained models exhibit strong **boundary influence spikes**: when the output pivot is at an interior timestep (t=32), the gradient w.r.t. boundary input positions (t=0, t=63) is dramatically elevated relative to neighboring timesteps.
+
+#### Boundary spike magnitudes (pos→pos, pivot=32, clean data, 128 probes)
+
+| Model | t=0 (bnd) | t=1 | t=31 | t=32 (self) | t=33 | t=62 | t=63 (bnd) |
+|---|---|---|---|---|---|---|---|
+| Diffuser | 2.594 | 0.087 | 0.740 | **28.04** | 0.696 | 0.084 | 2.424 |
+| EqM | 0.338 | 0.003 | 0.007 | **0.914** | 0.006 | 0.002 | 0.298 |
+
+Key observations:
+- **Self (offset-0) is still the largest influence** — 28.04 (Diffuser) and 0.91 (EqM)
+- **Boundary spikes are the second largest** — ~2.5 (Diffuser, 9% of self) and ~0.32 (EqM, 36% of self)
+- Boundary/near-boundary ratio: ~30x (Diffuser), ~100x (EqM)
+
+#### Action boundary amplification
+
+| Model | Block pair | Boundary pivot off0 | Interior pivot off0 | Ratio |
+|---|---|---|---|---|
+| Diffuser | act←vel | 1.118 | 1.129 | 0.99x |
+| EqM | act←vel | 0.042 | 0.033 | 1.25x |
+| EqM | act←pos | 0.036 | 0.012 | 3.06x |
+
+Action boundary amplification is modest for Diffuser but present in EqM, especially for act←pos.
+
+#### Monotonic action decay (Diffuser, offsets 0–10, t=0)
+
+Diffuser `act_out←vel_in`: 1.129, 0.574, 0.353, 0.266, 0.212, 0.181, 0.157, 0.133, 0.116, 0.096, 0.091 — **strictly monotonically decreasing**.
+
+Diffuser `act_out←pos_in`: 1.220, 0.337, 0.186, 0.149, 0.120, 0.105, 0.086, 0.075, 0.064, 0.053, 0.049 — **strictly monotonically decreasing**.
+
+EqM action offsets are roughly decreasing but noisier at low magnitudes.
+
+### 8.6 Boundary Spike Mechanism: Training-Time Conditioning
+
+**Question:** Why do boundary timesteps show elevated influence when training doesn't explicitly teach boundary importance?
+
+**Hypotheses tested:**
+1. **H1 (Architectural):** Conv1d padding effects in TemporalUnet create boundary artifacts → **RULED OUT**
+2. **H2 (Learned data statistics):** Training data has consistent boundary structure → Plausible but secondary
+3. **H3 (Training-time conditioning):** `apply_conditioning()` clamps boundary observations during training → **CONFIRMED as primary mechanism**
+
+**Control experiment — random untrained TemporalUnet (same architecture):**
+
+| Metric | Random network | Trained (Diffuser) | Trained (EqM) |
+|---|---|---|---|
+| Boundary / near-bnd | **0.73x** (suppressed) | ~30x (elevated) | ~100x (elevated) |
+| Boundary / interior | **0.14x** (suppressed) | ~2.5x | ~36x |
+
+The random network shows **no boundary spikes** — boundaries are actually suppressed, likely due to conv1d zero-padding at edges. This definitively rules out H1.
+
+**Root cause (H3 confirmed):** Both models apply `apply_conditioning()` *during training*, clamping boundary observations to clean values before each forward pass:
+- Diffuser `p_losses()`: `x_noisy = apply_conditioning(x_noisy, cond, self.action_dim)` before model forward
+- EqM `loss()`: `x_gamma = apply_conditioning(x_gamma, cond, self.action_dim)` before model forward
+
+Every training example has noise-free observations at t=0 and t=H-1, while interior timesteps are noised. The model learns that boundaries contain reliable anchor information at all noise levels, developing a **boundary-anchored denoising strategy** — functionally a learned BVP (boundary value problem) solver.
+
+**Implication for "position = scaffold" mental model:** The training procedure explicitly teaches the model to use boundary positions as fixed anchor points. Position influence is elevated at boundaries because the model learns to propagate clean boundary signal inward to denoise interior positions. This is consistent with position acting as a scaffold anchored at start/goal constraints.
+
+---
+
+## 7. Open Questions
 
 1. **H2 blockwise: act→act locality drop.** The act→act locality ratio drops from 240x (noise) to 3.1x (converged). Is this because converged trajectories have genuine cross-timestep action dependencies, or because the denoiser field magnitude vanishes near equilibrium, making the ratio's denominator unreliable?
 
@@ -285,7 +437,7 @@ H1 shows EqM refinement is dynamics-consistent descent. H3 shows waypoint constr
 
 ---
 
-## 7. Methods Reference
+## 8. Methods Reference
 
 ### 7.1 Scripts
 
@@ -295,14 +447,25 @@ H1 shows EqM refinement is dynamics-consistent descent. H3 shows waypoint constr
 | `scripts/analysis_eqm_locality_map_maze2d_blockwise.py` | H2 blockwise locality probes |
 | `scripts/eval_maze2d_waypoint_exec.py` | H3 execution-level waypoint eval |
 | `scripts/viz_maze2d_waypoint_exec_trajectories.py` | H3 trajectory visualization |
+| `scripts/smoothness_maze2d_compare.py` | §8.1 EqM vs Diffuser smoothness metrics |
+| `scripts/analysis_locality_vs_noise_maze2d.py` | §8.2 locality vs noise level (both models) |
+| `scripts/analysis_blockwise_locality_compare.py` | §8.3 blockwise raw grad norms (both models) |
+| `scripts/analysis_subblock_locality_compare.py` | §8.3 pos/vel sub-block locality (both models) |
+| `scripts/analysis_boundary_influence_maze2d.py` | §8.5–8.6 boundary influence & mechanism analysis |
+| `scripts/viz_maze2d_diffuser_compare.py` | §8.1 side-by-side trajectory visualization |
 | `scripts/maze2d_eqm_utils.py` | Shared model loading & utilities |
 
-### 7.2 Checkpoint
+### 7.2 Checkpoints
 
-`runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_k25_s010_budgetmatch/checkpoint_last.pt`
+**EqM:** `runs/analysis/synth_maze2d_diffuser_probe/eqm_budgetmatch_20260225-012027/eqm_k25_s010_budgetmatch/checkpoint_last.pt`
 - Architecture: TemporalUnet (dim=64, dim_mults=[1,2,4])
-- Training: 18,000 steps, EqM loss at $t_0 = 0$
+- Training: 18,000 steps, EqM loss at $t_0 = 0$, 4 online rounds
 - Dataset: maze2d-umaze-v1 (d4rl), 12,459 episodes
+
+**Diffuser:** `runs/analysis/synth_maze2d_diffuser_probe/compare_diffuser_vs_gcbc_20260217-180356/diffuser_ts6000_or4_ep64_t3000_rp16_gp040_seed0/checkpoint_last.pt`
+- Architecture: TemporalUnet (dim=64, dim_mults=[1,2,4]) — identical to EqM backbone
+- Training: 6,000 env steps, DDPM (T=64 cosine schedule), 4 online rounds
+- Dataset: maze2d-umaze-v1 (d4rl), same 12,459 episodes
 
 ### 7.3 Reproduction
 

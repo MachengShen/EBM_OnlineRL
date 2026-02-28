@@ -1315,3 +1315,440 @@ cd /root/ebm-online-rl-prototype && bash runs/analysis/synth_maze2d_diffuser_pro
 ### Bundle scope
 - Included: `scripts/online_pointmass_goal_diffuser.py`, `ebm_online_rl/envs/pointmass2d.py`, `ebm_online_rl/online/planner.py`, PointMass DI ablation `r1..r5` configs/metrics/summaries, and minimal Maze2D reference files used in causal comparison.
 - Excluded: model checkpoints (`.pt`) and unrelated large artifacts.
+
+
+## 2026-02-26T09:05:29.951Z
+### Objective
+- Preserve a clear workspace and task-state snapshot for the next agent on branch `analysis/results-2026-02-24`.
+- Record what changed in the log and which artifacts are present but untracked.
+
+### Changes
+- `HANDOFF_LOG.md` was modified with 13 inserted lines (`git diff --stat`).
+- Current tracked change: `M HANDOFF_LOG.md`.
+- Current untracked artifact: `MUJOCO_LOG.TXT`.
+- Current untracked artifact: `docs/EQM_RESEARCH_FINDINGS.md`.
+- Current untracked artifact: `eqm_maze2d_followups_20260226.zip`.
+- Current untracked artifact: `gpt_pro_bundle_20260221.zip`.
+- Current untracked artifact: `gpt_pro_bundle_20260221b.zip`.
+- Current untracked artifact: `gpt_pro_bundle_20260224_full.zip`.
+- Current untracked artifact: `gpt_pro_bundle_20260224_full/`.
+- Current untracked artifact: `gpt_pro_handoff_bundle_20260220.zip`.
+- Current untracked artifact: `gpt_pro_handoff_bundle_20260220/`.
+- Current untracked artifact: `memory/`.
+- Current untracked artifact: `scripts/viz_maze2d_waypoint_exec_trajectories.py`.
+- Task snapshot: `pending=1`, `running=0`, `done=2`, `failed=0`, `blocked=0`, `canceled=0`.
+
+### Evidence
+- Command: `git status --porcelain=v1` (repo: `/root/ebm-online-rl-prototype`, branch: `analysis/results-2026-02-24`).
+- Command: `git diff --stat` produced `HANDOFF_LOG.md | 13 +++++++++++++`.
+- Path: `/root/ebm-online-rl-prototype/HANDOFF_LOG.md`.
+- Path: `/root/ebm-online-rl-prototype/docs/EQM_RESEARCH_FINDINGS.md`.
+- Path: `/root/ebm-online-rl-prototype/scripts/viz_maze2d_waypoint_exec_trajectories.py`.
+- Path: `/root/ebm-online-rl-prototype/memory/`.
+
+### Next steps
+- Resolve the single remaining pending task and document the outcome in `HANDOFF_LOG.md`.
+- Decide which untracked artifacts should be committed (likely `docs/`, `scripts/`, `memory/`) versus retained as external bundles/logs.
+- Re-run `git status --porcelain=v1` after triage to confirm the intended working set before the next commit.
+
+
+## 2026-02-26T09:06:55.604Z
+### Objective
+- Preserve continuity for future agents on `analysis/results-2026-02-24` by capturing current repo state, documentation updates, and task queue status.
+- Record that the current run queue is drained: `pending=0`, `running=0`, `done=3`, `failed=0`, `blocked=0`, `canceled=0`.
+
+### Changes
+- Updated `HANDOFF_LOG.md` (`+48` lines).
+- Updated `docs/WORKING_MEMORY.md` (`+35` lines).
+- Untracked artifacts currently present: `MUJOCO_LOG.TXT`, `docs/EQM_RESEARCH_FINDINGS.md`, `eqm_maze2d_followups_20260226.zip`, `gpt_pro_bundle_20260221.zip`, `gpt_pro_bundle_20260221b.zip`, `gpt_pro_bundle_20260224_full.zip`, `gpt_pro_bundle_20260224_full/`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`, `scripts/viz_maze2d_waypoint_exec_trajectories.py`.
+
+### Evidence
+- Path: `/root/ebm-online-rl-prototype`
+- Branch: `analysis/results-2026-02-24`
+- Command: `git status --porcelain=v1`
+- Command: `git diff --stat`
+- Diff summary: `HANDOFF_LOG.md | 48 insertions`, `docs/WORKING_MEMORY.md | 35 insertions`, `2 files changed, 83 insertions(+)`
+
+### Next steps
+- Review `HANDOFF_LOG.md` and `docs/WORKING_MEMORY.md` for final consistency, then commit if accurate.
+- Triage untracked zips/directories into keep/archive/delete (or update `.gitignore`) before the next commit.
+- Continue follow-up analysis from `docs/WORKING_MEMORY.md`, with focus on `docs/EQM_RESEARCH_FINDINGS.md` and `scripts/viz_maze2d_waypoint_exec_trajectories.py`.
+
+
+## 2026-02-26T09:07:57.368Z
+### Objective
+- Capture a clean handoff snapshot for future agents after completing the current analysis cycle on branch `analysis/results-2026-02-24`.
+- Record documentation updates and newly generated result artifacts for continuity.
+
+### Changes
+- Updated `HANDOFF_LOG.md` (`+71` lines).
+- Updated `docs/WORKING_MEMORY.md` (`+58` lines).
+- Current worktree includes new untracked artifacts:
+- `MUJOCO_LOG.TXT`
+- `docs/EQM_RESEARCH_FINDINGS.md`
+- `eqm_maze2d_followups_20260226.zip`
+- `gpt_pro_bundle_20260221.zip`
+- `gpt_pro_bundle_20260221b.zip`
+- `gpt_pro_bundle_20260224_full.zip`
+- `gpt_pro_bundle_20260224_full/`
+- `gpt_pro_handoff_bundle_20260220.zip`
+- `gpt_pro_handoff_bundle_20260220/`
+- `memory/`
+- `scripts/viz_maze2d_waypoint_exec_trajectories.py`
+- Task tracker snapshot: `pending=0 running=0 done=4 failed=0 blocked=0 canceled=0`.
+
+### Evidence
+- Repo root: `/root/ebm-online-rl-prototype`
+- Branch: `analysis/results-2026-02-24`
+- Command: `git status --porcelain=v1`
+- Result highlights:
+- `M HANDOFF_LOG.md`
+- `M docs/WORKING_MEMORY.md`
+- `??` entries for artifacts listed above
+- Command: `git diff --stat`
+- Result: `HANDOFF_LOG.md | 71 +`, `docs/WORKING_MEMORY.md | 58 +`, total `129 insertions`.
+
+### Next steps
+- Review and commit `HANDOFF_LOG.md` and `docs/WORKING_MEMORY.md` together as the canonical continuity update.
+- Decide which large zip/folder artifacts should be retained in-repo vs moved to external storage/releases.
+- Validate whether `scripts/viz_maze2d_waypoint_exec_trajectories.py` should be promoted into the tracked experiment workflow with brief usage notes in docs.
+
+
+## 2026-02-26T09:27:20.972Z
+### Objective
+- Capture current experiment/repo state on `analysis/results-2026-02-24` so the next agent can resume immediately with no active tasks.
+
+### Changes
+- Updated [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) (`+110` lines).
+- Updated [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md) (`+97` lines).
+- Left new untracked artifacts in repo root, including `MUJOCO_LOG.TXT`, multiple `gpt_pro*_bundle*.zip` files, `eqm_maze2d_followups_20260226.zip`, and `memory/`.
+- Task queue snapshot: `pending=0`, `running=0`, `done=5`, `failed=0`, `blocked=0`, `canceled=0`.
+
+### Evidence
+- Repo root: `/root/ebm-online-rl-prototype`
+- Branch check and workspace state from `git status --porcelain=v1`:
+- Modified: [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md), [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md)
+- Untracked: `MUJOCO_LOG.TXT`, `eqm_maze2d_followups_20260226.zip`, `gpt_pro_bundle_20260221.zip`, `gpt_pro_bundle_20260221b.zip`, `gpt_pro_bundle_20260224_full.zip`, `gpt_pro_bundle_20260224_full/`, `gpt_pro_handoff_bundle_20260220.zip`, `gpt_pro_handoff_bundle_20260220/`, `memory/`
+- Change summary from `git diff --stat`:
+- [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) `| 110 +++++++++++++++++++++++++++++++++++++++++++++++++`
+- [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md) `| 97 +++++++++++++++++++++++++++++++++++++++++++`
+- Total: `2 files changed, 207 insertions(+)`
+
+### Next steps
+- Review and commit the documentation updates in [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) and [docs/WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md).
+- Decide which untracked bundles/logs are archival outputs vs. should be ignored/cleaned before the next coding cycle.
+- If handoff packaging is complete, tag or note the canonical bundle to avoid ambiguity across multiple similarly named zip artifacts.
+
+## 2026-02-27T10:59:55+08:00
+### Maze2D scaffold probe implementation (EqM + Diffuser)
+- Implemented shared scaffold helpers for `[act|obs]` trajectories:
+  - `ebm_online_rl/online/scaffold.py` (`build_anchor_times`, `extract_anchor_xy`, `apply_pos_only_anchors_`).
+- Integrated scaffold insertion into Maze2D checkpoint sampling path:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+  - EqM: insert anchors after endpoint conditioning during refinement; optional eta anneal (`eqm_eta_start/end`).
+  - Diffuser: custom reverse-loop wrapper for scaffold anchors + optional `diff_steps` override.
+- Added unified evaluation script:
+  - `scripts/maze2d_scaffold_probe.py`
+  - supports `--algo {eqm,diffuser}`, `--scaffold {none,insert_mid}`, smoothness metrics, and rollout metrics.
+- Added implementation-risk notes:
+  - `docs/IMPLEMENTATION_NOTES_SCAFFOLD_EQM_VS_DIFFUSER.md`.
+
+### Smoke evidence
+- EqM scaffold smoke:
+  - `runs/analysis/maze2d_scaffold_probe_smoke/eqm_scaffold_smoke/metrics.json`
+- Diffuser scaffold smoke:
+  - `runs/analysis/maze2d_scaffold_probe_smoke/diffuser_scaffold_smoke/metrics.json`
+- Both paths executed end-to-end under diffuser venv; runtime import and cross-module class-detection bugs were fixed.
+
+### Current next discriminating step
+- Run umaze baseline vs scaffold (compute-matched) for both algorithms using `scripts/maze2d_scaffold_probe.py`, then escalate to medium/large only if smoke-level deltas and logs are coherent.
+## 2026-02-27T15:50:00+08:00
+### Maze2D scaffold-first training: live progress snapshot
+- Run: `runs/analysis/maze2d_scaffold_training_20260227-153430/eqm_umaze_h64_scaffold_insertmid_fastmon_seed0/`
+- Early trend is favorable:
+  - `rollout_goal_success_rate_h256`: `0.00 @1k -> 0.0625 @2k -> 0.1875 @3k -> 0.5625 @4k -> 0.875 @6k`
+  - train/val losses decreased from ~`0.55/0.56` to ~`0.067/0.069` by `step=6000`.
+- Online transition accumulation so far:
+  - round1 `2979`, round2 `2938`, cumulative `5917` (20K gate not yet reached).
+- Runtime status at snapshot:
+  - no active process for this run found; latest files are `progress_metrics.csv` + `online_collection.csv` through `step=6000`/round2 collection.
+
+### Decision
+- Treat as encouraging partial scaffold evidence, but not a full gate decision.
+- Next action: relaunch/continue this exact run protocol under durable background logging to reach `>=20K` online transitions and apply the failure gate there.
+
+## 2026-02-27T16:30:19+08:00
+### Maze2D default-policy alignment update (self-improvement-first)
+
+### What changed
+- Updated `scripts/synthetic_maze2d_diffuser_probe.py` defaults to prefer online self-improvement over offline warmup:
+  - `n_episodes=0`, `train_steps=0`
+  - `online_self_improve=true`, `online_rounds=8`
+  - `online_collect_transition_budget_per_round=3000`
+  - `num_eval_queries=8`, `query_batch_size=2` (16 eval trajectories)
+  - `eval_goal_every=1000`
+- Added bootstrap replay path for `n_episodes=0`:
+  - if no replay import is provided, initial replay is collected with current policy before first training phase.
+  - geometric start-goal sampling now falls back to maze/env sampling when replay-based spans are unavailable.
+
+### Verification evidence
+- Runtime smoke (no offline init path):
+  - `runs/analysis/tmp_self_improve_default_smoke_20260227/`
+  - Observed sequence: bootstrap replay -> online collection -> online training -> progress/summary artifacts written.
+- Parser/help verified under diffuser venv with project PYTHONPATH.
+
+### Current implication
+- New default behavior is now directly compatible with “self-improvement from scratch” experiments.
+- To maintain strict compute matching, launcher scripts that hardcode old values still need explicit harmonization (same collection budget and eval sample settings).
+
+## 2026-02-27T16:49:09+08:00
+### EqNet self-improvement alignment policy (current default)
+- Canonical profile now enforced in training scripts: `alignment_profile=eqnet_self_improve_v1`.
+- Enforced defaults (unless explicit `--alignment_profile legacy_offline`):
+  - `n_episodes=0`
+  - `train_steps=0`
+  - `online_self_improve=true`, `online_rounds>0`, `online_collect_transition_budget_per_round>0`
+  - `num_eval_queries * query_batch_size = 16`
+- Coverage:
+  - `scripts/synthetic_maze2d_diffuser_probe.py`
+  - `scripts/synthetic_maze2d_gcbc_her_probe.py`
+  - `scripts/synthetic_maze2d_sac_her_probe.py`
+- Stability updates for no-offline bootstrap path:
+  - GCBC/SAC now support replay-empty start-goal fallback and bootstrap collection from current policy.
+  - `online_min_accepted_episode_len` default set to `8` in GCBC/SAC to avoid short-episode rejection loops during bootstrap.
+- Launcher alignment:
+  - `scripts/exp_swap_matrix_maze2d.py` now emits aligned defaults (`n_episodes=0`, `train_steps=0`, budgeted online collection, 16 eval trajectories/checkpoint).
+- Runtime evidence:
+  - `runs/analysis/tmp_alignment_smoke_gcbc_20260227_v4/` (pass)
+  - `runs/analysis/tmp_alignment_smoke_sac_20260227_v1/` (pass)
+  - alignment guard fail-fast confirmed in diffuser script for legacy offline args.
+- Policy note for future agents:
+  - `docs/EQNET_ALIGNMENT_POLICY.md`
+
+## 2026-02-27T17:08:47+08:00
+### Task t-0012: latest scaffold run completion + 20K gate assessment
+
+### Run analyzed
+- `runs/analysis/maze2d_scaffold_training_20260227-155628/eqm_umaze_h64_scaffold_insertmid_fastmon_seed0/`
+- Status: finished (`train_steps_total=20000`, `checkpoint_step20000.pt`, `checkpoint_last.pt`).
+
+### Loss and success progression
+- Loss (`metrics.csv`):
+  - `step=1000`: train `0.0783`, val `0.0878`
+  - `step=6000`: train `0.0703`, val `0.0720`
+  - `step=14000`: train `0.0685`, val `0.0649`
+  - `step=16000`: train `0.0666`, val `0.0648`
+  - `step=20000`: train `0.0669`, val `0.0653`
+- `rollout_goal_success_rate_h256` (`progress_metrics.csv`):
+  - early rise: `0.125 @1k`, `0.4375 @4k`, `0.8125 @6k`
+  - peak: `1.000 @14k`
+  - gate point: `0.250 @16k`
+  - final: `0.750 @20k`
+
+### 20K online-transition gate
+- `online_collection.csv` transitions per round:
+  - `[2984, 3000, 2975, 3000, 2948, 3000, 2941, 2955]`
+- Cumulative online transitions:
+  - `20848` at round 7 (`step_before_retrain=16000`) -> first `>=20K` gate crossing
+  - `23803` by run end
+- Gate decision:
+  - **Fail (recommend stop + diagnose)**: by >=20K online transitions, policy success did not show stable improvement (`0.25 @16k`, final `0.75 @20k` still below `0.8125 @6k`) while losses were mostly flattened in late training.
+
+### Next discriminating step
+- Run a compute-matched paired comparison under `alignment_profile=eqnet_self_improve_v1`:
+  - EqM baseline `--scaffold none`
+  - EqM scaffold `--scaffold insert_mid`
+- Compare at `6k/12k/20k` on `rollout_goal_success_rate_h256`, with the same online transition budget and eval cardinality.
+
+
+## 2026-02-27T09:09:28.839Z
+### Objective
+- Stabilize and prepare the Maze2D EQM validation workflow on branch `analysis/results-2026-02-24`, including callback-ready experiment scripts, checkpoint evaluators, and downstream analysis hooks.
+- Preserve cross-session continuity with a clear state snapshot (10 tasks done, 2 blocked) and explicit unblock questions.
+
+### Changes
+- Updated core memory/research docs: [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md), [WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md), [EQM_RESEARCH_FINDINGS.md](/root/ebm-online-rl-prototype/docs/EQM_RESEARCH_FINDINGS.md).
+- Added scaffold/alignment artifacts: [EQNET_ALIGNMENT_POLICY.md](/root/ebm-online-rl-prototype/docs/EQNET_ALIGNMENT_POLICY.md), [IMPLEMENTATION_NOTES_SCAFFOLD_EQM_VS_DIFFUSER.md](/root/ebm-online-rl-prototype/docs/IMPLEMENTATION_NOTES_SCAFFOLD_EQM_VS_DIFFUSER.md), [scaffold.py](/root/ebm-online-rl-prototype/ebm_online_rl/online/scaffold.py), [__init__.py](/root/ebm-online-rl-prototype/ebm_online_rl/online/__init__.py).
+- Expanded probe/eval/experiment scripts for schema/checkpoint robustness and callback metadata: [synthetic_maze2d_diffuser_probe.py](/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_diffuser_probe.py), [synthetic_maze2d_gcbc_her_probe.py](/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_gcbc_her_probe.py), [synthetic_maze2d_sac_her_probe.py](/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_sac_her_probe.py), [eval_synth_maze2d_checkpoint_prefix.py](/root/ebm-online-rl-prototype/scripts/eval_synth_maze2d_checkpoint_prefix.py), [eval_synth_maze2d_checkpoint_goal_suffix.py](/root/ebm-online-rl-prototype/scripts/eval_synth_maze2d_checkpoint_goal_suffix.py), [exp_replan_horizon_sweep.py](/root/ebm-online-rl-prototype/scripts/exp_replan_horizon_sweep.py), [exp_swap_matrix_maze2d.py](/root/ebm-online-rl-prototype/scripts/exp_swap_matrix_maze2d.py), [maze2d_eqm_utils.py](/root/ebm-online-rl-prototype/scripts/maze2d_eqm_utils.py).
+- Added new analysis/viz/probe assets and bundles, including [analysis_blockwise_locality_compare.py](/root/ebm-online-rl-prototype/scripts/analysis_blockwise_locality_compare.py), [analysis_boundary_influence_maze2d.py](/root/ebm-online-rl-prototype/scripts/analysis_boundary_influence_maze2d.py), [analysis_locality_vs_noise_maze2d.py](/root/ebm-online-rl-prototype/scripts/analysis_locality_vs_noise_maze2d.py), [analysis_subblock_locality_compare.py](/root/ebm-online-rl-prototype/scripts/analysis_subblock_locality_compare.py), [maze2d_scaffold_probe.py](/root/ebm-online-rl-prototype/scripts/maze2d_scaffold_probe.py), [smoothness_maze2d_compare.py](/root/ebm-online-rl-prototype/scripts/smoothness_maze2d_compare.py), [viz_maze2d_diffuser_compare.py](/root/ebm-online-rl-prototype/scripts/viz_maze2d_diffuser_compare.py), [viz_scaffold_segments.py](/root/ebm-online-rl-prototype/scripts/viz_scaffold_segments.py), and [memory/](/root/ebm-online-rl-prototype/memory/).
+- Diff snapshot from provided status: 12 tracked files changed, 2130 insertions, 146 deletions; multiple untracked artifacts/bundles present.
+
+### Evidence
+- Repo/workdir: `/root/ebm-online-rl-prototype`
+- Branch: `analysis/results-2026-02-24`
+- Commands used for state snapshot: `git status --porcelain=v1`, `git diff --stat`
+- Additional artifacts observed: [MUJOCO_LOG.TXT](/root/ebm-online-rl-prototype/MUJOCO_LOG.TXT), [eqm_maze2d_followups_20260226.zip](/root/ebm-online-rl-prototype/eqm_maze2d_followups_20260226.zip), [gpt_pro_bundle_20260224_full.zip](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full.zip), [gpt_pro_bundle_20260224_full/](/root/ebm-online-rl-prototype/gpt_pro_bundle_20260224_full/).
+- Task counts at snapshot: `pending=0 running=0 done=10 failed=0 blocked=2 canceled=0`
+- Plan tail indicates remaining work: mini end-to-end callback pipeline, mismatch fixes, then full validation launches plus memory/handoff updates.
+
+### Next steps
+- Unblock two open dependencies by confirming: exact attached plan source/path, exact `relay-long-task-callback` command/interface for this repo, and whether [HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt](/root/ebm-online-rl-prototype/HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt) must be regenerated.
+- Run syntax/help/smoke verification for [synthetic_maze2d_sac_her_probe.py](/root/ebm-online-rl-prototype/scripts/synthetic_maze2d_sac_her_probe.py) and newly added analysis scripts.
+- Execute one short end-to-end mini pipeline per experiment family with callback auto-analysis; fix any schema/analysis contract mismatches found.
+- Launch full validation experiments sequentially via callback workflow and append evidence-backed updates after each completion to [HANDOFF_LOG.md](/root/ebm-online-rl-prototype/HANDOFF_LOG.md) and [WORKING_MEMORY.md](/root/ebm-online-rl-prototype/docs/WORKING_MEMORY.md).
+- Triage untracked bundles/logs for retention policy before commit to avoid accidental artifact bloat.
+
+## 2026-02-27T17:53:44+08:00
+### Objective
+- Reduce statistical uncertainty in scaffold checkpoint evaluation by increasing rollout sample count from `16` to `50` trajectories/checkpoint and reassess `h256` success trend.
+
+### Changes
+- Completed GPU re-evaluation for scaffold checkpoints:
+  - `step4000`, `step8000`, `step12000`, `step16000`, `step20000`.
+- Wrote consolidated summary artifacts:
+  - `runs/analysis/maze2d_scaffold_reeval50_summary_20260227-175317.json`
+  - `runs/analysis/maze2d_scaffold_reeval50_summary_20260227-175317.csv`
+
+### Evidence
+- Re-eval command family: `scripts/maze2d_scaffold_probe.py --algo eqm --device cuda:0 --num_eval_queries 25 --query_batch_size 2 --scaffold insert_mid ...`
+- Re-eval `rollout_goal_success_rate_h256` (`new50`):
+  - `4000: 0.68`, `8000: 0.96`, `12000: 0.92`, `16000: 0.88`, `20000: 0.88`
+- Prior logged values at same steps from `progress_metrics.csv` (`old16`):
+  - `0.4375, 0.5625, 0.8750, 0.2500, 0.7500`
+- High-variance indicator: `step16000` moved from `0.25 (4/16)` to `0.88 (44/50)` under higher-cardinality eval.
+
+### Current interpretation
+- The 16-trajectory checkpoint metric is too noisy for gate decisions in this run.
+- With 50 trajectories/checkpoint, scaffold performance appears consistently strong after `8k` (`h256` success ~`0.88-0.96`).
+- The earlier stop+diagnose recommendation based on the `16k` dip is likely a sampling artifact.
+
+### Next steps
+- Complete matched no-scaffold re-evaluation with the same `50` trajectories/checkpoint protocol and compare scaffold vs no-scaffold at aligned steps (`4k/8k/12k/16k/20k`) before final ablation decision.
+
+## 2026-02-27T18:25:45+08:00
+### Objective
+- Complete `t-0013`: compare latest EqM `scaffold=none` run against scaffold insert-mid run at `6k/12k/20k`, apply the `>=20K` online-transition gate, and record the result.
+
+### Changes
+- Added pairwise comparison artifact from source CSVs:
+  - `runs/analysis/eqm_scaffold_none_vs_insertmid_t0013_gate_20260227-182527.json`
+- Appended full evidence entry to `HANDOFF_LOG.md` for `task_id=t-0013`.
+
+### Evidence
+- none run (latest): `runs/analysis/maze2d_scaffold_training_20260227-172159/eqm_umaze_h64_scaffold_none_fastmon_seed0/`
+- scaffold run: `runs/analysis/maze2d_scaffold_training_20260227-155628/eqm_umaze_h64_scaffold_insertmid_fastmon_seed0/`
+- Stepwise metrics (`train/val/success_h256`):
+  - `6000`: none `0.070325/0.072026/0.9375`, scaffold `0.070335/0.071951/0.8125`
+  - `12000`: none `0.068316/0.066133/0.6875`, scaffold `0.070547/0.065665/0.8750`
+  - `20000`: none `0.067595/0.063093/0.8750`, scaffold `0.066887/0.065321/0.7500`
+- Gate (`>=20K` online transitions):
+  - none: round `7`, `step_before_retrain=16000`, cumulative `20744`, decision `continue`
+  - scaffold: round `7`, `step_before_retrain=16000`, cumulative `20848`, decision `stop+diagnose`
+
+### Current interpretation
+- In this EqM pair, `scaffold=none` is the stronger reference at `6k` and `20k`; scaffold is better only at `12k`.
+- Under the current gate rule, non-scaffold remains viable while scaffold insert-mid does not.
+
+### Next steps
+- Launch matched diffuser `scaffold=none` vs `scaffold=insert_mid` training/eval under the same alignment profile and evaluate with higher-cardinality checkpoint rollouts before any scaffold adoption decision.
+
+
+## 2026-02-27T10:26:29.968Z
+### Objective
+- Continue the Maze2D EQM validation/analysis stream on `analysis/results-2026-02-24`, with callback-ready experiment scripts, checkpoint-compatible eval tooling, and up-to-date research memory/handoff docs.
+
+### Changes
+- Updated handoff/research memory docs: `HANDOFF_LOG.md`, `docs/WORKING_MEMORY.md`, `docs/EQM_RESEARCH_FINDINGS.md`.
+- Added scaffold/alignment docs and implementation notes: `docs/EQNET_ALIGNMENT_POLICY.md`, `docs/IMPLEMENTATION_NOTES_SCAFFOLD_EQM_VS_DIFFUSER.md`.
+- Extended online module surface with scaffold support: `ebm_online_rl/online/__init__.py`, `ebm_online_rl/online/scaffold.py`.
+- Revised core experiment/eval/probe scripts for schema/checkpoint contract alignment and callback-oriented outputs: `scripts/synthetic_maze2d_diffuser_probe.py`, `scripts/synthetic_maze2d_gcbc_her_probe.py`, `scripts/synthetic_maze2d_sac_her_probe.py`, `scripts/eval_synth_maze2d_checkpoint_prefix.py`, `scripts/eval_synth_maze2d_checkpoint_goal_suffix.py`, `scripts/exp_replan_horizon_sweep.py`, `scripts/exp_swap_matrix_maze2d.py`, `scripts/maze2d_eqm_utils.py`.
+- Added new analysis/viz/probe utilities: `scripts/analysis_blockwise_locality_compare.py`, `scripts/analysis_boundary_influence_maze2d.py`, `scripts/analysis_locality_vs_noise_maze2d.py`, `scripts/analysis_subblock_locality_compare.py`, `scripts/smoothness_maze2d_compare.py`, `scripts/viz_maze2d_diffuser_compare.py`, `scripts/viz_scaffold_segments.py`, `scripts/maze2d_scaffold_probe.py`.
+- Snapshot task ledger: `done=11`, `blocked=2`, `pending=0`, `running=0`, `failed=0`, `canceled=0`.
+
+### Evidence
+- Repo/context: `/root/ebm-online-rl-prototype`, branch `analysis/results-2026-02-24`.
+- Command snapshot used: `git status --porcelain=v1`.
+- Command snapshot used: `git diff --stat`.
+- Git diff stat snapshot: `12 files changed, 2336 insertions(+), 146 deletions(-)` on tracked files.
+- Untracked artifacts present include `MUJOCO_LOG.TXT`, `memory/`, multiple GPT-Pro bundle zips/directories, EQM followup bundles, new docs, and new analysis/probe scripts.
+- Plan tail indicates remaining flow through analyzer compatibility checks, mini end-to-end validation, then full sequential validation launch with memory/handoff updates per run.
+
+### Next steps
+- Unblock open dependency 1: provide exact attached plan content or file path so task mapping is explicit.
+- Unblock open dependency 2: confirm the required `relay-long-task-callback` command/interface for this repo.
+- Confirm whether `HANDOFF_SUMMARY_FOR_NEXT_CODEX.txt` should be regenerated in this cycle.
+- After unblock, execute remaining pipeline validation tasks (including mismatch fixes if found), then launch full validation experiments one-by-one and append results to `docs/WORKING_MEMORY.md` and `HANDOFF_LOG.md` after each completion.
+
+## 2026-02-27T21:40:18+08:00
+### Scaffold vs non-scaffold re-eval (50 trajectories/checkpoint) — completed
+- Consolidated artifact:
+  - `runs/analysis/scaffold_vs_nonscaffold_reeval50_summary_20260227-213943.json`
+  - `runs/analysis/scaffold_vs_nonscaffold_reeval50_summary_20260227-213943.csv`
+
+- EqM `h256` success (`none` vs `insert_mid`):
+  - `4000`: `0.60` vs `0.68`
+  - `8000`: `0.94` vs `0.96`
+  - `12000`: `0.90` vs `0.92`
+  - `16000`: `0.96` vs `0.88`
+  - `20000`: `0.88` vs `0.88`
+
+- Diffuser `h256` success (`none` vs `insert_mid`):
+  - `5000`: `0.78` vs `0.74`
+  - `10000`: `0.98` vs `1.00`
+  - `15000`: `1.00` vs `0.96`
+  - `20000`: `0.98` vs `0.98`
+
+### Current interpretation
+- At matched 50-sample checkpoint re-eval, scaffold effects are mixed for both EqM and Diffuser; neither algorithm shows consistent scaffold superiority.
+
+### Next discriminating step
+- Increase eval cardinality further (`n=200` trajectories/checkpoint) at a reduced checkpoint subset (`mid + final`) to test whether observed ±0.02 to ±0.04 deltas are stable vs residual sampling variance.
+
+## 2026-02-28T08:22:10+08:00
+### Poster status update
+- User-requested poster cancel completed.
+- Stopped active Discord score poster monitors (`PID 25904`, `PID 62043`).
+- Current poster status: **stopped** (no `discord_swap_matrix_monitor.py` / `discord_score_poster.py` process active).
+
+## 2026-02-28T11:05:57+08:00
+### Non-scaffold medium/large 100K batch — live status
+- Relay job: `j-20260228-082928-e6dc`
+- Base dir: `runs/analysis/non_scaffold_medium_large_100k_20260228-082812/`
+- Queue progress: `1/4` active (`eqm_medium_non_scaffold_100k`), `3/4` pending.
+- Active run latest train line: `phase=online_round_19`, `step=94600`, `train_loss=0.03674`, `val_loss=0.03386`.
+- Latest eval (`progress_metrics.csv`): `step=94000`, rollout success `h64/h128/h192/h256 = 0.00/0.00/0.00/0.00`.
+- Current interpretation: training is still running normally but online rollout success remains near-zero in this first run.
+- Next checkpoint action: wait for `summary.json` from run `1/4`, then decide continue vs early gate for runs `2-4`.
+## 2026-02-28T13:50:41+08:00
+### EqM medium near-end imagined trajectory diagnostics
+- Added visual diagnostics for existing near-end checkpoints from `runs/analysis/non_scaffold_medium_large_100k_20260228-082812/eqm_medium_non_scaffold_100k/`.
+- New artifacts:
+  - `runs/analysis/late_ckpt_traj_viz_20260228-133624/quick_inference_plots/eqm_medium_step90000_imagined_trajs.png`
+  - `runs/analysis/late_ckpt_traj_viz_20260228-133624/quick_inference_plots/eqm_medium_step95000_imagined_trajs.png`
+- Visual finding: samples mostly collapse into local loops/attractor regions and often fail to reach the goal cleanly; this pattern is similar at 90k and 95k.
+- Immediate implication: low rollout success in medium appears tied to inference trajectory quality (goal-reaching failure/looping), not train/val loss behavior alone.
+- Next step: run the same imagined-trajectory diagnostic for other algorithm/env runs as soon as they produce near-end checkpoints.
+## 2026-02-28T15:21:25+08:00
+### Diffuser medium status + imagined trajectory diagnostics
+- Active run: `runs/analysis/non_scaffold_medium_large_100k_20260228-082812/diffusion_medium_non_scaffold_100k/` (job `j-20260228-082928-e6dc`, still running).
+- Latest logged eval (`step=20000`):
+  - `imagined_goal_success_rate=1.00`, `imagined_pregoal_success_rate=0.00`
+  - `rollout_goal_success_rate_h64/h128/h192/h256 = 0.00/0.00/0.00/0.00`
+  - `rollout_min_goal_distance_mean_h256=8.248`, `rollout_final_goal_error_mean_h256=10.288`
+- New visual artifacts:
+  - `runs/analysis/late_ckpt_traj_viz_20260228-151513/diffuser_quick_inference_plots/diffuser_medium_step10000_imagined_trajs.png`
+  - `runs/analysis/late_ckpt_traj_viz_20260228-151513/diffuser_quick_inference_plots/diffuser_medium_step15000_imagined_trajs.png`
+  - `runs/analysis/late_ckpt_traj_viz_20260228-151513/diffuser_quick_inference_plots/diffuser_medium_step20000_imagined_trajs.png`
+- Interpretation: diffuser-medium currently has endpoint-satisfying imagined samples but zero executed rollout success, consistent with execution-time incompatibility rather than pure optimization-loss failure.
+- Next step: extract replay-buffer trajectory samples from medium run (round-wise) and compare to U-Maze replay trajectories to isolate where execution degrades.
+## 2026-02-28T17:12:00+08:00
+### Diffuser medium executed rollout trajectories (step20000) added
+- New executed trajectory diagnostics generated from:
+  - `runs/analysis/non_scaffold_medium_large_100k_20260228-082812/diffusion_medium_non_scaffold_100k/checkpoint_step20000.pt`
+- Artifacts:
+  - `runs/analysis/late_ckpt_traj_viz_20260228-173200/diffuser_rollout_plots/diffuser_medium_step20000_executed_openloop_rollouts.png`
+  - `runs/analysis/late_ckpt_traj_viz_20260228-173200/diffuser_rollout_plots/diffuser_medium_step20000_imagined_vs_executed_openloop.png`
+  - `runs/analysis/late_ckpt_traj_viz_20260228-173200/diffuser_rollout_plots/README.json`
+- Notes:
+  - To bypass known loader assertion from checkpoint config, a local patched copy was used with `max_path_length=1000`:
+    - `runs/analysis/late_ckpt_traj_viz_20260228-173200/diffuser_rollout_plots/checkpoint_step20000_patched_maxpath1000.pt`
+  - Plot overlap in earlier imagined figures came from `samples_per_query=6` (multiple stochastic samples overlaid per panel).
+  - New executed plots use `samples_per_query=1` for visual clarity.
+
+### Observed result
+- Executed rollout success remains `0.0` (`0/8`) at step20000 under open-loop execution (`horizon=256`, threshold=0.5).
+- Min-goal-distance remains large across queries (`~2.16` to `~5.59`), with nonzero wall-hit counts on some queries.
+
+### Current implication
+- Diffuser-medium failure persists in true execution even when imagined-vs-executed plotting ambiguity is removed.
+- Next discriminating step remains replay-buffer trajectory sampling (medium vs umaze; round-wise) to isolate execution-degradation source.
